@@ -14,6 +14,7 @@ import {
   MessageSquare,
   SlidersHorizontal,
   Link2,
+  Zap,
 } from 'lucide-react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import type { SettingsTab } from './types';
@@ -44,6 +45,7 @@ const featureItems: NavItem[] = [
   { key: 'skills', label: '技能(Skill)管理', icon: <Puzzle className="w-4 h-4" />, group: 'features' },
   { key: 'mcp-servers', label: 'MCP 服务器', icon: <Server className="w-4 h-4" />, group: 'features' },
   { key: 'agent-definitions', label: 'Agent', icon: <Bot className="w-4 h-4" />, group: 'features' },
+  { key: 'interceptors', label: '消息拦截器', icon: <Zap className="w-4 h-4" />, group: 'features' },
   { key: 'bindings', label: 'IM 绑定', icon: <Link2 className="w-4 h-4" />, group: 'features' },
   { key: 'users', label: '用户管理', icon: <UserCog className="w-4 h-4" />, group: 'features' },
   { key: 'about', label: '关于', icon: <Info className="w-4 h-4" />, group: 'features' },

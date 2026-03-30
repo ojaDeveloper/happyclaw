@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { getChannelFromJid } from './channel-prefixes.js';
@@ -45,7 +46,13 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
 // [1m] 后缀启用 1M 上下文窗口（CLI 内部 jG() 识别后缀，sM() 返回 1M 窗口）
-const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
+let CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
+// 降级模型：主模型限流时自动切换，默认 sonnet（若与主模型相同则禁用）
+let FALLBACK_MODEL: string | undefined = process.env.ANTHROPIC_FALLBACK_MODEL || 'sonnet';
+if (FALLBACK_MODEL === CLAUDE_MODEL) FALLBACK_MODEL = undefined;
+
+// 上一轮 token 消耗，注入到下一轮 systemPrompt 供模型自报消耗
+let lastUsageSummary: string | null = null;
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -99,7 +106,7 @@ const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 // ── 系统提示词优化：安全守则（从独立 Markdown 文件加载，始终注入所有容器） ──
 
 const SECURITY_RULES_PATH = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   '..',
   'prompts',
   'security-rules.md',
@@ -694,6 +701,7 @@ function shouldDrain(): boolean {
  */
 interface IpcDrainResult {
   messages: Array<{ text: string; images?: Array<{ data: string; mimeType?: string }> }>;
+  modelSwitched?: boolean;
 }
 
 function drainIpcInput(): IpcDrainResult {
@@ -713,6 +721,12 @@ function drainIpcInput(): IpcDrainResult {
             text: data.text,
             images: data.images,
           });
+        } else if (data.type === 'switch_model' && data.model) {
+          const oldModel = CLAUDE_MODEL;
+          CLAUDE_MODEL = data.model;
+          if (data.fallbackModel) FALLBACK_MODEL = data.fallbackModel === CLAUDE_MODEL ? undefined : data.fallbackModel;
+          log(`Model switched: ${oldModel} → ${CLAUDE_MODEL} (fallback: ${FALLBACK_MODEL ?? 'none'})`);
+          result.modelSwitched = true;
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1161,6 +1175,9 @@ async function runQuery(
   const channelGuidelines = buildChannelGuidelines(channel);
 
   const systemPromptAppend = [
+    // L0: Usage — 上一轮 token 消耗（供模型自报）
+    lastUsageSummary && `<last-usage>\n${lastUsageSummary}\n</last-usage>`,
+
     // L1: Identity — 用户身份与偏好（仅主容器注入）
     globalClaudeMd && `<user-profile>\n${globalClaudeMd}\n</user-profile>`,
 
@@ -1203,6 +1220,7 @@ async function runQuery(
     prompt: stream,
     options: {
       model: CLAUDE_MODEL,
+      fallbackModel: FALLBACK_MODEL,
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs,
       resume: sessionId,
@@ -1456,6 +1474,8 @@ async function runQuery(
           },
         });
         log(`Usage: input=${sdkUsage.input_tokens} output=${sdkUsage.output_tokens} cost=$${resultMsg.total_cost_usd} turns=${resultMsg.num_turns}`);
+        // 记录本轮消耗，供下一轮注入 systemPrompt
+        lastUsageSummary = `上一轮：输入 ${sdkUsage.input_tokens || 0} tokens + 缓存读取 ${sdkUsage.cache_read_input_tokens || 0} + 缓存写入 ${sdkUsage.cache_creation_input_tokens || 0} + 输出 ${sdkUsage.output_tokens || 0} tokens，费用 $${((resultMsg.total_cost_usd as number) || 0).toFixed(2)}。`;
       }
 
       // ── 标记结果已收到 ──

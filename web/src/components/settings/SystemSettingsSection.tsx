@@ -133,6 +133,7 @@ export function SystemSettingsSection() {
 
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [displayValues, setDisplayValues] = useState<Record<string, number>>({});
+  const [fallbackModel, setFallbackModel] = useState('sonnet');
   const [billingEnabled, setBillingEnabled] = useState(false);
   const [billingMinStartBalanceUsd, setBillingMinStartBalanceUsd] = useState(0.01);
   const [billingCurrency, setBillingCurrency] = useState('USD');
@@ -157,6 +158,7 @@ export function SystemSettingsSection() {
           display[f.key] = f.toDisplay(data[f.key] as number);
         }
         setDisplayValues(display);
+        setFallbackModel(data.anthropicFallbackModel || 'sonnet');
         setBillingEnabled(data.billingEnabled ?? false);
         setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
         setBillingCurrency(data.billingCurrency ?? 'USD');
@@ -200,6 +202,7 @@ export function SystemSettingsSection() {
     setSaving(true);
     try {
       const payload: Partial<SystemSettings> = {
+        anthropicFallbackModel: fallbackModel,
         billingEnabled,
         billingMode: 'wallet_first',
         billingMinStartBalanceUsd,
@@ -219,6 +222,7 @@ export function SystemSettingsSection() {
         display[f.key] = f.toDisplay(data[f.key] as number);
       }
       setDisplayValues(display);
+      setFallbackModel(data.anthropicFallbackModel || 'sonnet');
       setBillingEnabled(data.billingEnabled ?? false);
       setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
       setBillingCurrency(data.billingCurrency ?? 'USD');
@@ -282,6 +286,27 @@ export function SystemSettingsSection() {
             </p>
           </div>
         ))}
+      </div>
+
+      {/* 模型降级 */}
+      <div className="border-t border-border pt-6 space-y-5">
+        <h3 className="text-sm font-semibold text-foreground">模型降级</h3>
+        <div>
+          <Label className="mb-1">降级模型</Label>
+          <select
+            value={fallbackModel}
+            onChange={(e) => setFallbackModel(e.target.value)}
+            className="h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent max-w-64"
+          >
+            <option value="sonnet">Sonnet（推荐）</option>
+            <option value="haiku">Haiku（最快）</option>
+            <option value="opus">Opus（同级）</option>
+            <option value="">不降级</option>
+          </select>
+          <p className="text-xs text-muted-foreground mt-1">
+            主模型限流时自动切换到此模型，工具能力完整保留。留空则不降级。
+          </p>
+        </div>
       </div>
 
       {/* 计费设置 */}

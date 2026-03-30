@@ -84,6 +84,8 @@ import {
   cleanupOldBillingAuditLog,
   insertUsageRecord,
 } from './db.js';
+import { messageInterceptorPipeline } from './message-interceptors.js';
+import { headerInjector } from './interceptors/header-injector.js';
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
 import { getChannelType, extractChatId } from './im-channel.js';
@@ -105,6 +107,8 @@ import {
 } from './im-command-utils.js';
 import { invalidateSessionCache, getWebDeps } from './web-context.js';
 import {
+  getClaudeProviderConfig,
+  getContainerEnvConfig,
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
   getTelegramProviderConfigWithSource,
@@ -1668,6 +1672,8 @@ interface SendMessageOptions {
   localImagePaths?: string[];
   /** Message source identifier (e.g. 'scheduled_task') for frontend routing. */
   source?: string;
+  /** Current model identifier for outbound interceptors (e.g. 'opus[1m]'). */
+  model?: string;
   /** Metadata used to preserve Claude SDK turn semantics for persisted messages. */
   messageMeta?: {
     turnId?: string;
@@ -2351,6 +2357,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }
 
+  // 读取当前配置的模型（供消息拦截器实时显示，避免依赖上一轮 usage）
+  const containerOverride = getContainerEnvConfig(effectiveGroup.folder);
+  const configuredModel =
+    containerOverride.anthropicModel ||
+    getClaudeProviderConfig().anthropicModel ||
+    process.env.ANTHROPIC_MODEL;
+
   let output:
     | { status: 'success' | 'error' | 'closed'; error?: string }
     | undefined;
@@ -2442,6 +2455,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   }
                   lastReplyMsgId = await sendMessage(chatJid, interruptedText, {
                     sendToIM: false,
+                    model: configuredModel,
                     messageMeta: {
                       turnId: result.streamEvent.turnId || lastProcessed.id,
                       sessionId:
@@ -2633,6 +2647,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   usage: se.usage,
                 });
 
+                // 通知消息拦截器：更新该 chat 最近使用的模型（供下一轮 header 使用）
+                const latestModel = se.usage.modelUsage
+                  ? Object.keys(se.usage.modelUsage)[0]
+                  : undefined;
+                if (latestModel) {
+                  headerInjector.notifyUsageRecorded(chatJid, latestModel);
+                }
+
                 logger.debug(
                   {
                     chatJid,
@@ -2740,6 +2762,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               let streamingCardHandledIM = false;
               if (streamingSession?.isActive()) {
                 try {
+                  // ── 出站拦截器管道（飞书 streaming card 路径）──
+                  // streaming card 绕过了 sendMessage()，需在此手动执行拦截器，
+                  // 使序号 / 模型名 / token 消耗 header 能注入到卡片最终文本中。
+                  {
+                    const outboundCtx = {
+                      chatJid,
+                      content: text,
+                      model: configuredModel,
+                      sessionId: activeSessionId,
+                    };
+                    await messageInterceptorPipeline.runOutbound(outboundCtx);
+                    text = outboundCtx.content;
+                  }
                   await streamingSession.complete(text);
                   streamingCardHandledIM = true;
                   // Streaming card replaced the normal sendMessage path,
@@ -2818,6 +2853,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               lastReplyMsgId = await sendMessage(chatJid, text, {
                 sendToIM: directImReply && !skipImSend,
                 localImagePaths,
+                model: configuredModel,
                 messageMeta: {
                   turnId: turnIdForDb,
                   sessionId: result.sessionId || activeSessionId,
@@ -2929,6 +2965,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         // sendToIM: false — 飞书卡片已通过 abort() 展示内容，不重复发送
         lastReplyMsgId = await sendMessage(chatJid, interruptedText, {
           sendToIM: false,
+          model: configuredModel,
           messageMeta: {
             turnId: lastProcessed.id,
             sessionId: activeSessionId,
@@ -2958,6 +2995,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         );
         lastReplyMsgId = await sendMessage(chatJid, partialReply, {
           sendToIM: false,
+          model: configuredModel,
           messageMeta: {
             turnId: lastProcessed.id,
             sessionId: activeSessionId,
@@ -3468,6 +3506,15 @@ async function sendMessage(
   const isIMChannel = getChannelType(jid) !== null;
   const sendToIM = options.sendToIM ?? isIMChannel;
   try {
+    // ── 出站拦截器管道（在发送前修改消息内容）──
+    // 仅对 Agent 回复（非系统消息）执行，由 options.source 区分
+    // scheduled_task_prompt 等内部消息跳过拦截
+    if (!options.source) {
+      const outboundCtx = { chatJid: jid, content: text, model: options.model, sessionId: options.messageMeta?.sessionId };
+      await messageInterceptorPipeline.runOutbound(outboundCtx);
+      text = outboundCtx.content;
+    }
+
     if (sendToIM && isIMChannel) {
       try {
         const localImagePaths =
@@ -3923,16 +3970,20 @@ function startIpcWatcher(): void {
                 // processAgentConversation's wrappedOnOutput callback.
                 if (!ipcAgentId) {
                   const ipcImRoute = activeImReplyRoutes.get(sourceGroup);
-                  if (
-                    ipcImRoute &&
-                    getChannelType(data.chatJid) === null &&
-                    ipcImRoute !== data.chatJid
-                  ) {
+                  // For home containers, the agent-runner's chatJid may be stale
+                  // (set at session start). Forward to the dynamic IM route even
+                  // when data.chatJid is an IM JID pointing to a different channel.
+                  const shouldForwardToIm = isHome
+                    ? ipcImRoute && ipcImRoute !== data.chatJid
+                    : ipcImRoute &&
+                      getChannelType(data.chatJid) === null &&
+                      ipcImRoute !== data.chatJid;
+                  if (shouldForwardToIm) {
                     const localImages = extractLocalImImagePaths(
                       data.text,
                       sourceGroup,
                     );
-                    sendImWithFailTracking(ipcImRoute, data.text, localImages);
+                    sendImWithFailTracking(ipcImRoute!, data.text, localImages);
                   }
 
                   // Scheduled task: broadcast to all connected IM channels of the owner
@@ -3998,11 +4049,18 @@ function startIpcWatcher(): void {
 
                   // Conversation agents: skip IM forwarding (handled in wrappedOnOutput).
                   // Non-agent: route to IM via activeImReplyRoutes.
+                  // For home containers, prefer activeImReplyRoutes (dynamic) over
+                  // data.chatJid (stale from session start).
                   const imgImRoute = ipcAgentId
                     ? null
-                    : getChannelType(data.chatJid) !== null
-                      ? data.chatJid
-                      : (activeImReplyRoutes.get(sourceGroup) ?? null);
+                    : isHome
+                      ? (activeImReplyRoutes.get(sourceGroup) ??
+                          (getChannelType(data.chatJid) !== null
+                            ? data.chatJid
+                            : null))
+                      : getChannelType(data.chatJid) !== null
+                        ? data.chatJid
+                        : (activeImReplyRoutes.get(sourceGroup) ?? null);
                   if (imgImRoute) {
                     await retryImOperation('send_image', imgImRoute, () =>
                       imManager.sendImage(
@@ -4777,11 +4835,19 @@ async function processTaskIpc(
           }
 
           // Route to IM: skip for conversation agents (they handle their own IM).
+          // For home containers, prefer activeImReplyRoutes over data.chatJid because
+          // the agent-runner's chatJid is set once at session start and may be stale
+          // (e.g. session started from feishu but user is now on telegram).
           const fileImRoute = ipcAgentId
             ? null
-            : getChannelType(data.chatJid) !== null
-              ? data.chatJid
-              : (activeImReplyRoutes.get(sourceGroup) ?? null);
+            : isHome
+              ? (activeImReplyRoutes.get(sourceGroup) ??
+                  (getChannelType(data.chatJid) !== null
+                    ? data.chatJid
+                    : null))
+              : getChannelType(data.chatJid) !== null
+                ? data.chatJid
+                : (activeImReplyRoutes.get(sourceGroup) ?? null);
           if (fileImRoute) {
             const imFileName = data.fileName || path.basename(resolvedPath);
             await retryImOperation('send_file', fileImRoute, () =>
@@ -5189,6 +5255,24 @@ async function processAgentConversation(
         let streamingCardHandledIM = false;
         if (agentStreamingSession?.isActive()) {
           try {
+            // ── 出站拦截器管道（子 Agent 飞书 streaming card 路径）──
+            // streaming card 绕过了 sendMessage()，需在此手动执行拦截器，
+            // 使序号 / 模型名 / token 消耗 header 能注入到卡片最终文本中。
+            {
+              const agentContainerOverride = getContainerEnvConfig(effectiveGroup.folder);
+              const agentConfiguredModel =
+                agentContainerOverride.anthropicModel ||
+                getClaudeProviderConfig().anthropicModel ||
+                process.env.ANTHROPIC_MODEL;
+              const outboundCtx = {
+                chatJid,
+                content: text,
+                model: agentConfiguredModel,
+                sessionId: currentAgentSessionId,
+              };
+              await messageInterceptorPipeline.runOutbound(outboundCtx);
+              text = outboundCtx.content;
+            }
             await agentStreamingSession.complete(text);
             streamingCardHandledIM = true;
           } catch (err) {
@@ -6618,6 +6702,11 @@ async function main(): Promise<void> {
   migrateDataDirectories();
   initDatabase();
   logger.info('Database initialized');
+
+  // 注册消息拦截器，并加载热配置文件（data/config/interceptors.json）
+  messageInterceptorPipeline.use(headerInjector);
+  messageInterceptorPipeline.loadConfig();
+  logger.info('Message interceptors registered and config loaded');
 
   // Clean up stale completed agents (task + spawn, older than 1 hour) to prevent DB bloat
   try {

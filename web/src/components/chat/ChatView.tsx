@@ -9,7 +9,7 @@ import { ContainerEnvPanel } from './ContainerEnvPanel';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { PromptDialog } from '@/components/common/PromptDialog';
-import { ArrowLeft, FolderOpen, Link, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Puzzle, Server, Sun, Terminal, Users, Variable, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, FolderOpen, Link, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Puzzle, Server, Sun, Terminal, Users, Variable, X } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { useTheme } from '../../hooks/useTheme';
 import { cn } from '@/lib/utils';
@@ -74,6 +74,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [imBannerDismissed, setImBannerDismissed] = useState(() =>
     localStorage.getItem('im-banner-dismissed') === '1',
   );
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [activeModel, setActiveModel] = useState(() =>
+    localStorage.getItem(`hc_model_${groupJid}`) || 'opus[1m]',
+  );
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   // Drag state refs (not reactive — only used in event handlers)
@@ -92,6 +97,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const refreshMessages = useChatStore(s => s.refreshMessages);
   const sendMessage = useChatStore(s => s.sendMessage);
   const interruptQuery = useChatStore(s => s.interruptQuery);
+  const switchModel = useChatStore(s => s.switchModel);
   const resetSession = useChatStore(s => s.resetSession);
   const handleStreamEvent = useChatStore(s => s.handleStreamEvent);
   const handleWsNewMessage = useChatStore(s => s.handleWsNewMessage);
@@ -115,6 +121,37 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const currentUser = useAuthStore(s => s.user);
   const canUseTerminal = group?.execution_mode !== 'host';
   const pollRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Model selector
+  const MODEL_OPTIONS = [
+    { value: 'opus[1m]', label: 'Opus', desc: '最强推理' },
+    { value: 'sonnet', label: 'Sonnet', desc: '均衡' },
+    { value: 'haiku', label: 'Haiku', desc: '快速' },
+  ];
+  const activeModelLabel = MODEL_OPTIONS.find(m => m.value === activeModel)?.label || activeModel;
+
+  const handleSwitchModel = useCallback(async (model: string) => {
+    setModelMenuOpen(false);
+    if (model === activeModel) return;
+    const ok = await switchModel(groupJid, model);
+    if (ok) {
+      setActiveModel(model);
+      localStorage.setItem(`hc_model_${groupJid}`, model);
+      showToast(`已切换到 ${MODEL_OPTIONS.find(m => m.value === model)?.label || model}`, 'success');
+    }
+  }, [groupJid, activeModel, switchModel]);
+
+  // Close model menu on outside click
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [modelMenuOpen]);
 
   // Sidebar: members tab visibility
   const isHome = !!group?.is_home;
@@ -445,6 +482,34 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               </>
             )}
           </div>
+        </div>
+        {/* Model selector */}
+        <div className="relative" ref={modelMenuRef}>
+          <button
+            onClick={() => setModelMenuOpen(v => !v)}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-accent text-muted-foreground text-xs font-medium transition-colors cursor-pointer"
+            title="切换模型"
+          >
+            {activeModelLabel}
+            <ChevronDown className="w-3 h-3" />
+          </button>
+          {modelMenuOpen && (
+            <div className="absolute right-0 top-full mt-1 bg-popover border border-border rounded-lg shadow-lg py-1 z-50 min-w-[140px]">
+              {MODEL_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => handleSwitchModel(opt.value)}
+                  className={cn(
+                    'w-full text-left px-3 py-1.5 text-sm hover:bg-accent transition-colors cursor-pointer flex items-center justify-between',
+                    opt.value === activeModel && 'text-primary font-medium',
+                  )}
+                >
+                  <span>{opt.label}</span>
+                  <span className="text-xs text-muted-foreground">{opt.desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* Desktop: toggle theme (light → dark → system) */}
         <button

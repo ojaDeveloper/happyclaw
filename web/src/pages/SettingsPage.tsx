@@ -19,10 +19,11 @@ import { McpServersPage } from './McpServersPage';
 import { AgentDefinitionsPage } from './AgentDefinitionsPage';
 import { UsersPage } from './UsersPage';
 import { BindingsSection } from '../components/settings/BindingsSection';
+import { InterceptorsSection } from '../components/settings/InterceptorsSection';
 import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
+const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'interceptors', 'users', 'about', 'bindings'];
 const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
 const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings'];
 
@@ -107,6 +108,7 @@ export function SettingsPage() {
     skills: '技能(Skill)管理',
     'mcp-servers': 'MCP 服务器',
     'agent-definitions': 'Agent 管理',
+    interceptors: '消息拦截器',
     users: '用户管理',
     about: '关于',
     bindings: 'IM 绑定',
@@ -200,6 +202,7 @@ export function SettingsPage() {
                   {activeTab === 'profile' && <ProfileSection />}
                   {activeTab === 'my-channels' && <UserChannelsSection />}
                   {activeTab === 'security' && <SecuritySection />}
+                  {activeTab === 'interceptors' && <InterceptorsSection />}
                   {activeTab === 'about' && <AboutSection />}
                 </CardContent>
               </Card>

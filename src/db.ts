@@ -1189,7 +1189,17 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE agents ADD COLUMN spawned_from_jid TEXT');
   }
 
-  const SCHEMA_VERSION = '33';
+  // v33 → v34: Add answer_count to chats table (消息拦截器序号持久化)
+  if (
+    !db
+      .prepare("PRAGMA table_info('chats')")
+      .all()
+      .some((c: any) => c.name === 'answer_count')
+  ) {
+    db.exec('ALTER TABLE chats ADD COLUMN answer_count INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const SCHEMA_VERSION = '34';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -5283,6 +5293,90 @@ export function tryIncrementRedeemCodeUsage(
     ).run(code, userId, now);
     return true;
   })();
+}
+
+/**
+ * 消息拦截器：递增并返回指定 chat 的回答序号。
+ * 每次 Agent 向用户发送回复时调用，序号从 1 开始，重启后不归零。
+ */
+export function incrementAndGetAnswerCount(chatJid: string): number {
+  db.prepare(
+    `UPDATE chats SET answer_count = answer_count + 1 WHERE jid = ?`,
+  ).run(chatJid);
+  const row = db
+    .prepare(`SELECT answer_count FROM chats WHERE jid = ?`)
+    .get(chatJid) as { answer_count: number } | undefined;
+  return row?.answer_count ?? 1;
+}
+
+/**
+ * 消息拦截器：查询该 chat 最近一条 Agent 回复的 token 消耗。
+ * 返回 null 表示没有历史记录或 token_usage 为空。
+ */
+export function getLastAgentMessageUsage(chatJid: string): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUSD: number;
+  model: string;
+} | null {
+  // 优先从 usage_records JOIN messages 查最近一条记录（含模型信息）
+  const usageRow = db
+    .prepare(
+      `SELECT u.model, u.input_tokens, u.output_tokens,
+              u.cache_read_input_tokens, u.cache_creation_input_tokens, u.cost_usd
+       FROM usage_records u
+       JOIN messages m ON u.message_id = m.id
+       WHERE m.chat_jid = ? AND m.is_from_me = 1
+       ORDER BY m.timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid) as
+    | {
+        model: string;
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_input_tokens: number;
+        cache_creation_input_tokens: number;
+        cost_usd: number;
+      }
+    | undefined;
+
+  if (usageRow) {
+    return {
+      model: usageRow.model,
+      inputTokens: usageRow.input_tokens,
+      outputTokens: usageRow.output_tokens,
+      cacheReadInputTokens: usageRow.cache_read_input_tokens,
+      cacheCreationInputTokens: usageRow.cache_creation_input_tokens,
+      costUSD: usageRow.cost_usd,
+    };
+  }
+
+  // fallback：从 messages.token_usage JSON 字段解析
+  const msgRow = db
+    .prepare(
+      `SELECT token_usage FROM messages
+       WHERE chat_jid = ? AND is_from_me = 1 AND token_usage IS NOT NULL
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid) as { token_usage: string } | undefined;
+
+  if (!msgRow) return null;
+
+  try {
+    const tu = JSON.parse(msgRow.token_usage);
+    return {
+      model: tu.model ?? '',
+      inputTokens: tu.inputTokens ?? 0,
+      outputTokens: tu.outputTokens ?? 0,
+      cacheReadInputTokens: tu.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: tu.cacheCreationInputTokens ?? 0,
+      costUSD: tu.costUsd ?? 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

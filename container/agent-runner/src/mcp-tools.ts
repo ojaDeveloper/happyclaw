@@ -193,19 +193,6 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
           .describe('Optional caption text to send with the image'),
       },
       async (args) => {
-        // Web channels don't support direct image sending
-        if (ctx.chatJid.startsWith('web:')) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: 'Error: send_image is not supported for Web channels. Images can only be sent to IM channels (Feishu/Telegram).',
-              },
-            ],
-            isError: true,
-          };
-        }
-
         // Resolve path relative to workspace
         const absPath = path.isAbsolute(args.file_path)
           ? args.file_path
@@ -324,19 +311,6 @@ Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
           .describe('File name to display (e.g., "report.pdf")'),
       },
       async (args) => {
-        // Web channels don't support direct file sending
-        if (ctx.chatJid.startsWith('web:')) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: 'Error: send_file is not supported for Web channels. Files can only be sent to IM channels (Feishu/Telegram).',
-              },
-            ],
-            isError: true,
-          };
-        }
-
         // Handle both absolute and relative paths
         let resolvedPath: string;
         let relativePath: string;

@@ -36,6 +36,7 @@ const RESERVED_CLAUDE_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_MODEL',
+  'ANTHROPIC_FALLBACK_MODEL',
 ]);
 const DANGEROUS_ENV_VARS = new Set([
   // Code execution / preload attacks
@@ -2718,6 +2719,12 @@ export function buildContainerEnvLines(
   const merged = mergeClaudeEnvConfig(global, override);
   const lines = buildClaudeEnvLines(merged, profileCustomEnv);
 
+  // Inject fallback model from system settings
+  const sysSettings = getSystemSettings();
+  if (sysSettings.anthropicFallbackModel) {
+    lines.push(`ANTHROPIC_FALLBACK_MODEL=${sanitizeEnvValue(sysSettings.anthropicFallbackModel)}`);
+  }
+
   // Append custom env vars (with safety sanitization as defense-in-depth)
   if (override.customEnv) {
     for (const [key, value] of Object.entries(override.customEnv)) {
@@ -3402,6 +3409,8 @@ export interface SystemSettings {
   // Skills auto-sync
   skillAutoSyncEnabled: boolean;
   skillAutoSyncIntervalMinutes: number;
+  // Model fallback
+  anthropicFallbackModel: string;
   // Billing
   billingEnabled: boolean;
   billingMode: 'wallet_first';
@@ -3422,6 +3431,7 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   scriptTimeout: 60000,
   skillAutoSyncEnabled: false,
   skillAutoSyncIntervalMinutes: 10,
+  anthropicFallbackModel: 'sonnet',
   billingEnabled: false,
   billingMode: 'wallet_first',
   billingMinStartBalanceUsd: 0.01,
@@ -3500,6 +3510,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       raw.skillAutoSyncIntervalMinutes >= 1
         ? raw.skillAutoSyncIntervalMinutes
         : DEFAULT_SYSTEM_SETTINGS.skillAutoSyncIntervalMinutes,
+    anthropicFallbackModel:
+      typeof raw.anthropicFallbackModel === 'string' && raw.anthropicFallbackModel
+        ? raw.anthropicFallbackModel
+        : DEFAULT_SYSTEM_SETTINGS.anthropicFallbackModel,
     billingEnabled:
       typeof raw.billingEnabled === 'boolean'
         ? raw.billingEnabled
@@ -3566,6 +3580,8 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.SKILL_AUTO_SYNC_INTERVAL_MINUTES,
       DEFAULT_SYSTEM_SETTINGS.skillAutoSyncIntervalMinutes,
     ),
+    anthropicFallbackModel:
+      process.env.ANTHROPIC_FALLBACK_MODEL || DEFAULT_SYSTEM_SETTINGS.anthropicFallbackModel,
     billingEnabled:
       process.env.BILLING_ENABLED === 'true' ||
       DEFAULT_SYSTEM_SETTINGS.billingEnabled,
@@ -3654,6 +3670,9 @@ export function saveSystemSettings(
   if (merged.scriptTimeout > 600000) merged.scriptTimeout = 600000; // max 10 min
   if (merged.skillAutoSyncIntervalMinutes < 1) merged.skillAutoSyncIntervalMinutes = 1;
   if (merged.skillAutoSyncIntervalMinutes > 1440) merged.skillAutoSyncIntervalMinutes = 1440; // max 24h
+  if (merged.anthropicFallbackModel && typeof merged.anthropicFallbackModel === 'string') {
+    merged.anthropicFallbackModel = merged.anthropicFallbackModel.trim().slice(0, 100);
+  }
   merged.billingMode = 'wallet_first';
   if (merged.billingMinStartBalanceUsd < 0)
     merged.billingMinStartBalanceUsd =

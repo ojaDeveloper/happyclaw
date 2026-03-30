@@ -99,6 +99,7 @@ export interface SystemSettings {
   scriptTimeout: number;
   skillAutoSyncEnabled: boolean;
   skillAutoSyncIntervalMinutes: number;
+  anthropicFallbackModel: string;
   billingEnabled: boolean;
   billingMode: 'wallet_first';
   billingMinStartBalanceUsd: number;
@@ -106,7 +107,7 @@ export interface SystemSettings {
   billingCurrencyRate: number;
 }
 
-export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings';
+export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'interceptors' | 'users' | 'about' | 'bindings';
 
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {
