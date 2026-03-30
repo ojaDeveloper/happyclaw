@@ -610,15 +610,13 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
   return result;
 }
 
-function encryptFeishuSecret(payload: FeishuSecretPayload): EncryptedSecrets {
+function encryptChannelSecret<T>(payload: T): EncryptedSecrets {
   const key = getOrCreateEncryptionKey();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-
   const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
-
   return {
     iv: iv.toString('base64'),
     tag: tag.toString('base64'),
@@ -626,23 +624,18 @@ function encryptFeishuSecret(payload: FeishuSecretPayload): EncryptedSecrets {
   };
 }
 
-function decryptFeishuSecret(secrets: EncryptedSecrets): FeishuSecretPayload {
+function decryptChannelSecret<T>(secrets: EncryptedSecrets): T {
   const key = getOrCreateEncryptionKey();
   const iv = Buffer.from(secrets.iv, 'base64');
   const tag = Buffer.from(secrets.tag, 'base64');
   const encrypted = Buffer.from(secrets.data, 'base64');
-
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
-
   const decrypted = Buffer.concat([
     decipher.update(encrypted),
     decipher.final(),
   ]).toString('utf-8');
-  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
-  return {
-    appSecret: normalizeSecret(parsed.appSecret ?? '', 'appSecret'),
-  };
+  return JSON.parse(decrypted) as T;
 }
 
 function readLegacyConfig(
@@ -1022,9 +1015,10 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
 }
 
 /** Migrate V3 stored state to V4 unified provider list */
-function migrateV3toV4(
-  v3: ClaudeStoredStateV3Resolved,
-): { providers: UnifiedProvider[]; balancing: BalancingConfig } {
+function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
+  providers: UnifiedProvider[];
+  balancing: BalancingConfig;
+} {
   const providers: UnifiedProvider[] = [];
   const now = new Date().toISOString();
 
@@ -1045,8 +1039,7 @@ function migrateV3toV4(
       anthropicModel: '',
       anthropicApiKey: v3.officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
-      claudeOAuthCredentials:
-        v3.officialSecrets.claudeOAuthCredentials ?? null,
+      claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1246,7 +1239,7 @@ export function createProvider(input: {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
-    enabled: input.enabled ?? (state.providers.length === 0),
+    enabled: input.enabled ?? state.providers.length === 0,
     weight: Math.max(1, Math.min(100, input.weight ?? 1)),
     anthropicBaseUrl: input.anthropicBaseUrl
       ? normalizeBaseUrl(input.anthropicBaseUrl)
@@ -1394,10 +1387,7 @@ export function toggleProvider(id: string): UnifiedProvider {
   const newEnabled = !provider.enabled;
 
   // Prevent disabling the last enabled provider
-  if (
-    !newEnabled &&
-    state.providers.filter((p) => p.enabled).length <= 1
-  ) {
+  if (!newEnabled && state.providers.filter((p) => p.enabled).length <= 1) {
     throw new Error('至少需要保留一个启用的供应商');
   }
 
@@ -1433,7 +1423,9 @@ export function deleteProvider(id: string): void {
 }
 
 /** Convert a UnifiedProvider to the flat ClaudeProviderConfig used by container runner */
-export function providerToConfig(provider: UnifiedProvider): ClaudeProviderConfig {
+export function providerToConfig(
+  provider: UnifiedProvider,
+): ClaudeProviderConfig {
   return {
     anthropicBaseUrl: provider.anthropicBaseUrl,
     anthropicAuthToken: provider.anthropicAuthToken,
@@ -1446,7 +1438,9 @@ export function providerToConfig(provider: UnifiedProvider): ClaudeProviderConfi
 }
 
 /** Convert UnifiedProvider to public (masked) representation */
-export function toPublicProvider(provider: UnifiedProvider): UnifiedProviderPublic {
+export function toPublicProvider(
+  provider: UnifiedProvider,
+): UnifiedProviderPublic {
   return {
     id: provider.id,
     name: provider.name,
@@ -1492,7 +1486,10 @@ export function resolveProviderById(providerId: string): {
     const fallback =
       state.providers.find((p) => p.enabled) || state.providers[0];
     if (!fallback) return { config: defaultsFromEnv(), customEnv: {} };
-    return { config: providerToConfig(fallback), customEnv: fallback.customEnv };
+    return {
+      config: providerToConfig(fallback),
+      customEnv: fallback.customEnv,
+    };
   }
 
   return {
@@ -1593,7 +1590,7 @@ function readStoredFeishuConfig(): FeishuProviderConfig | null {
   if (parsed.version !== 1) return null;
 
   const stored = parsed as unknown as StoredFeishuProviderConfigV1;
-  const secret = decryptFeishuSecret(stored.secret);
+  const secret = decryptChannelSecret<FeishuSecretPayload>(stored.secret);
   return {
     appId: normalizeFeishuAppId(stored.appId ?? ''),
     appSecret: secret.appSecret,
@@ -1655,7 +1652,7 @@ export function saveFeishuProviderConfig(
     appId: normalized.appId,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secret: encryptFeishuSecret({ appSecret: normalized.appSecret }),
+    secret: encryptChannelSecret<FeishuSecretPayload>({ appSecret: normalized.appSecret }),
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
@@ -1681,45 +1678,6 @@ export function toPublicFeishuProviderConfig(
 
 // ========== Telegram Provider Config ==========
 
-function encryptTelegramSecret(
-  payload: TelegramSecretPayload,
-): EncryptedSecrets {
-  const key = getOrCreateEncryptionKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-
-  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
-  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-
-  return {
-    iv: iv.toString('base64'),
-    tag: tag.toString('base64'),
-    data: encrypted.toString('base64'),
-  };
-}
-
-function decryptTelegramSecret(
-  secrets: EncryptedSecrets,
-): TelegramSecretPayload {
-  const key = getOrCreateEncryptionKey();
-  const iv = Buffer.from(secrets.iv, 'base64');
-  const tag = Buffer.from(secrets.tag, 'base64');
-  const encrypted = Buffer.from(secrets.data, 'base64');
-
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]).toString('utf-8');
-  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
-  return {
-    botToken: normalizeSecret(parsed.botToken ?? '', 'botToken'),
-  };
-}
-
 function readStoredTelegramConfig(): TelegramProviderConfig | null {
   if (!fs.existsSync(TELEGRAM_CONFIG_FILE)) return null;
   const content = fs.readFileSync(TELEGRAM_CONFIG_FILE, 'utf-8');
@@ -1727,7 +1685,7 @@ function readStoredTelegramConfig(): TelegramProviderConfig | null {
   if (parsed.version !== 1) return null;
 
   const stored = parsed as unknown as StoredTelegramProviderConfigV1;
-  const secret = decryptTelegramSecret(stored.secret);
+  const secret = decryptChannelSecret<TelegramSecretPayload>(stored.secret);
   return {
     botToken: secret.botToken,
     proxyUrl: normalizeTelegramProxyUrl(stored.proxyUrl ?? ''),
@@ -1789,7 +1747,7 @@ export function saveTelegramProviderConfig(
     proxyUrl: normalized.proxyUrl,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secret: encryptTelegramSecret({ botToken: normalized.botToken }),
+    secret: encryptChannelSecret<TelegramSecretPayload>({ botToken: normalized.botToken }),
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
@@ -2367,8 +2325,7 @@ export function getActiveProfileCustomEnv(): Record<string, string> {
   const state = readStoredStateV4();
   if (!state) return {};
 
-  const enabled =
-    state.providers.find((p) => p.enabled) || state.providers[0];
+  const enabled = state.providers.find((p) => p.enabled) || state.providers[0];
   if (!enabled) return {};
 
   return sanitizeCustomEnvMap(enabled.customEnv || {}, {
@@ -3052,6 +3009,25 @@ export interface UserQQConfig {
   updatedAt: string | null;
 }
 
+export interface UserDingTalkConfig {
+  clientId: string;
+  clientSecret: string;
+  enabled?: boolean;
+  updatedAt: string | null;
+}
+
+interface StoredDingTalkProviderConfigV1 {
+  version: 1;
+  clientId: string;
+  enabled?: boolean;
+  updatedAt: string;
+  secret: EncryptedSecrets;
+}
+
+interface DingTalkSecretPayload {
+  clientSecret: string;
+}
+
 interface StoredQQProviderConfigV1 {
   version: 1;
   appId: string;
@@ -3080,7 +3056,7 @@ export function getUserFeishuConfig(userId: string): UserFeishuConfig | null {
     if (parsed.version !== 1) return null;
 
     const stored = parsed as unknown as StoredFeishuProviderConfigV1;
-    const secret = decryptFeishuSecret(stored.secret);
+    const secret = decryptChannelSecret<FeishuSecretPayload>(stored.secret);
     return {
       appId: normalizeFeishuAppId(stored.appId ?? ''),
       appSecret: secret.appSecret,
@@ -3109,7 +3085,7 @@ export function saveUserFeishuConfig(
     appId: normalized.appId,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secret: encryptFeishuSecret({ appSecret: normalized.appSecret }),
+    secret: encryptChannelSecret<FeishuSecretPayload>({ appSecret: normalized.appSecret }),
   };
 
   const dir = userImDir(userId);
@@ -3132,7 +3108,7 @@ export function getUserTelegramConfig(
     if (parsed.version !== 1) return null;
 
     const stored = parsed as unknown as StoredTelegramProviderConfigV1;
-    const secret = decryptTelegramSecret(stored.secret);
+    const secret = decryptChannelSecret<TelegramSecretPayload>(stored.secret);
     return {
       botToken: secret.botToken,
       proxyUrl: normalizeTelegramProxyUrl(stored.proxyUrl ?? ''),
@@ -3164,7 +3140,7 @@ export function saveUserTelegramConfig(
     proxyUrl: normalizedProxyUrl || undefined,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secret: encryptTelegramSecret({ botToken: normalized.botToken }),
+    secret: encryptChannelSecret<TelegramSecretPayload>({ botToken: normalized.botToken }),
   };
 
   const dir = userImDir(userId);
@@ -3178,41 +3154,6 @@ export function saveUserTelegramConfig(
 
 // ========== QQ User IM Config ==========
 
-function encryptQQSecret(payload: QQSecretPayload): EncryptedSecrets {
-  const key = getOrCreateEncryptionKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-
-  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
-  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-
-  return {
-    iv: iv.toString('base64'),
-    tag: tag.toString('base64'),
-    data: encrypted.toString('base64'),
-  };
-}
-
-function decryptQQSecret(secrets: EncryptedSecrets): QQSecretPayload {
-  const key = getOrCreateEncryptionKey();
-  const iv = Buffer.from(secrets.iv, 'base64');
-  const tag = Buffer.from(secrets.tag, 'base64');
-  const encrypted = Buffer.from(secrets.data, 'base64');
-
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]).toString('utf-8');
-  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
-  return {
-    appSecret: normalizeSecret(parsed.appSecret ?? '', 'appSecret'),
-  };
-}
-
 export function getUserQQConfig(userId: string): UserQQConfig | null {
   const filePath = path.join(userImDir(userId), 'qq.json');
   try {
@@ -3222,7 +3163,7 @@ export function getUserQQConfig(userId: string): UserQQConfig | null {
     if (parsed.version !== 1) return null;
 
     const stored = parsed as unknown as StoredQQProviderConfigV1;
-    const secret = decryptQQSecret(stored.secret);
+    const secret = decryptChannelSecret<QQSecretPayload>(stored.secret);
     return {
       appId: normalizeFeishuAppId(stored.appId ?? ''),
       appSecret: secret.appSecret,
@@ -3251,7 +3192,7 @@ export function saveUserQQConfig(
     appId: normalized.appId,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secret: encryptQQSecret({ appSecret: normalized.appSecret }),
+    secret: encryptChannelSecret<QQSecretPayload>({ appSecret: normalized.appSecret }),
   };
 
   const dir = userImDir(userId);
@@ -3292,41 +3233,6 @@ interface WeChatSecretPayload {
   botToken: string;
 }
 
-function encryptWeChatSecret(payload: WeChatSecretPayload): EncryptedSecrets {
-  const key = getOrCreateEncryptionKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-
-  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
-  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-
-  return {
-    iv: iv.toString('base64'),
-    tag: tag.toString('base64'),
-    data: encrypted.toString('base64'),
-  };
-}
-
-function decryptWeChatSecret(secrets: EncryptedSecrets): WeChatSecretPayload {
-  const key = getOrCreateEncryptionKey();
-  const iv = Buffer.from(secrets.iv, 'base64');
-  const tag = Buffer.from(secrets.tag, 'base64');
-  const encrypted = Buffer.from(secrets.data, 'base64');
-
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]).toString('utf-8');
-  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
-  return {
-    botToken: normalizeSecret(parsed.botToken ?? '', 'botToken'),
-  };
-}
-
 export function getUserWeChatConfig(userId: string): UserWeChatConfig | null {
   const filePath = path.join(userImDir(userId), 'wechat.json');
   try {
@@ -3336,7 +3242,7 @@ export function getUserWeChatConfig(userId: string): UserWeChatConfig | null {
     if (parsed.version !== 1) return null;
 
     const stored = parsed as unknown as StoredWeChatProviderConfigV1;
-    const secret = decryptWeChatSecret(stored.secret);
+    const secret = decryptChannelSecret<WeChatSecretPayload>(stored.secret);
     return {
       botToken: secret.botToken,
       ilinkBotId: ((stored.ilinkBotId as string) ?? '').trim(),
@@ -3377,12 +3283,65 @@ export function saveUserWeChatConfig(
     bypassProxy: normalized.bypassProxy,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secret: encryptWeChatSecret({ botToken: normalized.botToken }),
+    secret: encryptChannelSecret<WeChatSecretPayload>({ botToken: normalized.botToken }),
   };
 
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'wechat.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return normalized;
+}
+
+// ========== DingTalk User IM Config ==========
+
+export function getUserDingTalkConfig(
+  userId: string,
+): UserDingTalkConfig | null {
+  const filePath = path.join(userImDir(userId), 'dingtalk.json');
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+
+    const stored = parsed as unknown as StoredDingTalkProviderConfigV1;
+    const secret = decryptChannelSecret<DingTalkSecretPayload>(stored.secret);
+    return {
+      clientId: ((stored.clientId as string) ?? '').trim(),
+      clientSecret: secret.clientSecret,
+      enabled: stored.enabled,
+      updatedAt: stored.updatedAt || null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user DingTalk config');
+    return null;
+  }
+}
+
+export function saveUserDingTalkConfig(
+  userId: string,
+  next: Omit<UserDingTalkConfig, 'updatedAt'>,
+): UserDingTalkConfig {
+  const normalized: UserDingTalkConfig = {
+    clientId: ((next.clientId as string) ?? '').trim(),
+    clientSecret: normalizeSecret(next.clientSecret, 'clientSecret'),
+    enabled: next.enabled,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const payload: StoredDingTalkProviderConfigV1 = {
+    version: 1,
+    clientId: normalized.clientId,
+    enabled: normalized.enabled,
+    updatedAt: normalized.updatedAt || new Date().toISOString(),
+    secret: encryptChannelSecret<DingTalkSecretPayload>({ clientSecret: normalized.clientSecret }),
+  };
+
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'dingtalk.json');
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, filePath);
