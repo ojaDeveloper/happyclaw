@@ -30,8 +30,10 @@ export interface InboundContext {
 }
 
 export interface OutboundContext {
-  /** 目标聊天 JID */
+  /** 目标聊天 JID（归一化后的，如 web:main） */
   chatJid: string;
+  /** 原始 IM JID（如 feishu:oc_xxx），用于独立计数，可为空 */
+  rawJid?: string;
   /** Agent 回复内容（可修改） */
   content: string;
   /** 本轮使用的模型 */

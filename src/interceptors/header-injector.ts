@@ -62,11 +62,14 @@ export class HeaderInjector implements MessageInterceptor {
   }
 
   async onOutbound(ctx: OutboundContext): Promise<void> {
+    // 使用原始 JID（如果有）进行独立计数，否则回退到 chatJid
+    const counterJid = ctx.rawJid || ctx.chatJid;
+
     // 查询上一轮的 usage（在当前轮 usage 写入之前执行，所以 DB 里是前一轮的）
-    const lastUsage = getLastAgentMessageUsage(ctx.chatJid);
+    const lastUsage = getLastAgentMessageUsage(counterJid);
 
     // 递增序号，获取当前回答序号 N
-    const currentN = incrementAndGetAnswerCount(ctx.chatJid);
+    const currentN = incrementAndGetAnswerCount(counterJid);
     const prevN = currentN - 1;
 
     // 模型名称：优先 ctx.model，其次内存缓存，最后 lastUsage 中的 model

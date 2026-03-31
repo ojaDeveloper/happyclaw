@@ -1702,6 +1702,8 @@ interface SendMessageOptions {
   source?: string;
   /** Current model identifier for outbound interceptors (e.g. 'opus[1m]'). */
   model?: string;
+  /** Skip outbound interceptors (already applied, e.g. streaming card path). */
+  skipInterceptor?: boolean;
   /** Metadata used to preserve Claude SDK turn semantics for persisted messages. */
   messageMeta?: {
     turnId?: string;
@@ -2779,6 +2781,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               `Agent output: ${raw.slice(0, 200)}`,
             );
             if (text) {
+              // ── 出站拦截器管道（统一执行，所有 IM 路径共享） ──
+              {
+                const folder = resolveEffectiveFolder(chatJid);
+                const rawJid = folder ? activeImReplyRoutes.get(folder) ?? undefined : undefined;
+                const outboundCtx = {
+                  chatJid,
+                  rawJid,
+                  content: text,
+                  model: configuredModel,
+                  sessionId: activeSessionId,
+                };
+                await messageInterceptorPipeline.runOutbound(outboundCtx);
+                text = outboundCtx.content;
+              }
+
               // Stop typing indicator before sending — clears the 4s refresh timer
               // so it doesn't keep firing while the agent stays alive in idle state.
               await setTyping(chatJid, false);
@@ -2793,19 +2810,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               let streamingCardHandledIM = false;
               if (streamingSession?.isActive()) {
                 try {
-                  // ── 出站拦截器管道（飞书 streaming card 路径）──
-                  // streaming card 绕过了 sendMessage()，需在此手动执行拦截器，
-                  // 使序号 / 模型名 / token 消耗 header 能注入到卡片最终文本中。
-                  {
-                    const outboundCtx = {
-                      chatJid,
-                      content: text,
-                      model: configuredModel,
-                      sessionId: activeSessionId,
-                    };
-                    await messageInterceptorPipeline.runOutbound(outboundCtx);
-                    text = outboundCtx.content;
-                  }
+                  // 拦截器已在上方统一执行，text 已包含 header
                   await streamingSession.complete(text);
                   streamingCardHandledIM = true;
                   // Streaming card replaced the normal sendMessage path,
@@ -2885,6 +2890,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 sendToIM: directImReply && !skipImSend,
                 localImagePaths,
                 model: configuredModel,
+                skipInterceptor: true,
                 messageMeta: {
                   turnId: turnIdForDb,
                   sessionId: result.sessionId || activeSessionId,
@@ -3540,8 +3546,11 @@ async function sendMessage(
     // ── 出站拦截器管道（在发送前修改消息内容）──
     // 仅对 Agent 回复（非系统消息）执行，由 options.source 区分
     // scheduled_task_prompt 等内部消息跳过拦截
-    if (!options.source) {
-      const outboundCtx = { chatJid: jid, content: text, model: options.model, sessionId: options.messageMeta?.sessionId };
+    if (!options.source && !options.skipInterceptor) {
+      // 获取原始 IM JID 用于独立计数
+      const folder = resolveEffectiveFolder(jid);
+      const rawJid = folder ? activeImReplyRoutes.get(folder) ?? undefined : undefined;
+      const outboundCtx = { chatJid: jid, rawJid, content: text, model: options.model, sessionId: options.messageMeta?.sessionId };
       await messageInterceptorPipeline.runOutbound(outboundCtx);
       text = outboundCtx.content;
     }
@@ -5362,21 +5371,6 @@ async function processAgentConversation(
             // ── 出站拦截器管道（子 Agent 飞书 streaming card 路径）──
             // streaming card 绕过了 sendMessage()，需在此手动执行拦截器，
             // 使序号 / 模型名 / token 消耗 header 能注入到卡片最终文本中。
-            {
-              const agentContainerOverride = getContainerEnvConfig(effectiveGroup.folder);
-              const agentConfiguredModel =
-                agentContainerOverride.anthropicModel ||
-                getClaudeProviderConfig().anthropicModel ||
-                process.env.ANTHROPIC_MODEL;
-              const outboundCtx = {
-                chatJid,
-                content: text,
-                model: agentConfiguredModel,
-                sessionId: currentAgentSessionId,
-              };
-              await messageInterceptorPipeline.runOutbound(outboundCtx);
-              text = outboundCtx.content;
-            }
             await agentStreamingSession.complete(text);
             streamingCardHandledIM = true;
           } catch (err) {
@@ -7848,6 +7842,30 @@ async function main(): Promise<void> {
   setInterval(() => {
     void checkImBindingsHealth();
   }, IM_BINDING_HEALTH_CHECK_INTERVAL);
+
+  // Send restart notification to all connected IM channels (max 3 retries per channel)
+  const RESTART_MSG = '我已经重启了';
+  const RESTART_MAX_RETRIES = 3;
+  const notifiedJids = new Set<string>();
+  for (const [jid] of Object.entries(registeredGroups)) {
+    if (!getChannelType(jid) || notifiedJids.has(jid)) continue;
+    notifiedJids.add(jid);
+    (async () => {
+      for (let attempt = 1; attempt <= RESTART_MAX_RETRIES; attempt++) {
+        try {
+          await sendMessage(jid, RESTART_MSG);
+          logger.info({ jid }, 'Restart notification sent');
+          return;
+        } catch (err) {
+          logger.warn({ jid, attempt, err }, 'Restart notification failed');
+          if (attempt < RESTART_MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, 2000 * attempt));
+          }
+        }
+      }
+      logger.error({ jid }, 'Restart notification failed after all retries');
+    })();
+  }
 }
 
 async function checkImBindingsHealth(): Promise<void> {
