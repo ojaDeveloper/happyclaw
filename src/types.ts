@@ -140,6 +140,45 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+// --- Execution Record types ---
+
+export type ExecutionRecordStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+
+export interface ToolCallDetail {
+  name: string;
+  summary: string;
+  toolUseId?: string;
+}
+
+export interface ExecutionRecord {
+  id: string;
+  turn_id: string;
+  session_id: string | null;
+  user_id: string;
+  chat_jid: string;
+  group_folder: string;
+  group_name: string | null;
+  source_channel: string | null;
+  description: string;
+  status: ExecutionRecordStatus;
+  tools_used: string; // JSON array of tool names (deduplicated)
+  tool_details: string; // JSON array of ToolCallDetail (each call with summary)
+  tool_count: number;
+  model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  duration_ms: number;
+  started_at: string;
+  completed_at: string | null;
+  agent_id: string | null;
+  error: string | null;
+}
+
 // --- Auth types ---
 
 export type UserRole = 'admin' | 'member';
@@ -372,6 +411,10 @@ export type WsMessageOut =
       usage: BillingAccessResult;
     }
   | { type: 'ws_error'; error: string; chatJid?: string }
+  | {
+      type: 'execution_record_update';
+      record: ExecutionRecord;
+    }
   | {
       type: 'stream_snapshot';
       chatJid: string;

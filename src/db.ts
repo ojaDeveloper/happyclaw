@@ -10,6 +10,8 @@ import {
   AgentStatus,
   AuthAuditLog,
   AuthEventType,
+  ExecutionRecord,
+  ExecutionRecordStatus,
   BalanceOperatorType,
   BalanceReferenceType,
   BalanceTransaction,
@@ -607,6 +609,37 @@ export function initDatabase(): void {
     );
   `);
 
+  // Execution records (tool-usage task tracking)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS execution_records (
+      id TEXT PRIMARY KEY,
+      turn_id TEXT NOT NULL,
+      session_id TEXT,
+      user_id TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      group_name TEXT,
+      source_channel TEXT,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      tools_used TEXT NOT NULL DEFAULT '[]',
+      tool_details TEXT NOT NULL DEFAULT '[]',
+      tool_count INTEGER DEFAULT 0,
+      model TEXT,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      agent_id TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_exec_records_user ON execution_records(user_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_exec_records_status ON execution_records(status);
+    CREATE INDEX IF NOT EXISTS idx_exec_records_chat ON execution_records(chat_jid, started_at DESC);
+  `);
+
   // Lightweight migrations for existing DBs
   ensureColumn('users', 'permissions', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
@@ -1199,7 +1232,11 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE chats ADD COLUMN answer_count INTEGER NOT NULL DEFAULT 0');
   }
 
-  const SCHEMA_VERSION = '34';
+  // v34 → v35: execution_records table (handled by CREATE TABLE IF NOT EXISTS above)
+  ensureColumn('execution_records', 'group_name', 'TEXT');
+  ensureColumn('execution_records', 'tool_details', "TEXT NOT NULL DEFAULT '[]'");
+
+  const SCHEMA_VERSION = '35';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -5377,6 +5414,150 @@ export function getLastAgentMessageUsage(chatJid: string): {
   } catch {
     return null;
   }
+}
+
+// ── Execution Records CRUD ──
+
+export function createExecutionRecord(record: ExecutionRecord): void {
+  db.prepare(
+    `INSERT INTO execution_records
+       (id, turn_id, session_id, user_id, chat_jid, group_folder, group_name,
+        source_channel, description, status, tools_used, tool_details, tool_count, model,
+        input_tokens, output_tokens, cost_usd, duration_ms,
+        started_at, completed_at, agent_id, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    record.id,
+    record.turn_id,
+    record.session_id,
+    record.user_id,
+    record.chat_jid,
+    record.group_folder,
+    record.group_name,
+    record.source_channel,
+    record.description,
+    record.status,
+    record.tools_used,
+    record.tool_details,
+    record.tool_count,
+    record.model,
+    record.input_tokens,
+    record.output_tokens,
+    record.cost_usd,
+    record.duration_ms,
+    record.started_at,
+    record.completed_at,
+    record.agent_id,
+    record.error,
+  );
+}
+
+export function updateExecutionRecord(
+  id: string,
+  updates: Partial<
+    Pick<
+      ExecutionRecord,
+      | 'status'
+      | 'tools_used'
+      | 'tool_details'
+      | 'tool_count'
+      | 'model'
+      | 'input_tokens'
+      | 'output_tokens'
+      | 'cost_usd'
+      | 'duration_ms'
+      | 'completed_at'
+      | 'error'
+    >
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, val] of Object.entries(updates)) {
+    if (val !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+  }
+  if (fields.length === 0) return;
+  values.push(id);
+  db.prepare(
+    `UPDATE execution_records SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
+}
+
+export function getExecutionRecordByTurnId(
+  turnId: string,
+): ExecutionRecord | undefined {
+  return db
+    .prepare('SELECT * FROM execution_records WHERE turn_id = ?')
+    .get(turnId) as ExecutionRecord | undefined;
+}
+
+export function getExecutionRecords(opts: {
+  userId?: string;
+  status?: ExecutionRecordStatus;
+  chatJid?: string;
+  limit?: number;
+  offset?: number;
+}): ExecutionRecord[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.userId) {
+    conditions.push('user_id = ?');
+    params.push(opts.userId);
+  }
+  if (opts.status) {
+    conditions.push('status = ?');
+    params.push(opts.status);
+  }
+  if (opts.chatJid) {
+    conditions.push('chat_jid = ?');
+    params.push(opts.chatJid);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
+  return db
+    .prepare(
+      `SELECT * FROM execution_records ${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limit, offset) as ExecutionRecord[];
+}
+
+export function countExecutionRecords(opts: {
+  userId?: string;
+  status?: ExecutionRecordStatus;
+  chatJid?: string;
+}): number {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.userId) {
+    conditions.push('user_id = ?');
+    params.push(opts.userId);
+  }
+  if (opts.status) {
+    conditions.push('status = ?');
+    params.push(opts.status);
+  }
+  if (opts.chatJid) {
+    conditions.push('chat_jid = ?');
+    params.push(opts.chatJid);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return (
+    db.prepare(`SELECT COUNT(*) as cnt FROM execution_records ${where}`).get(
+      ...params,
+    ) as { cnt: number }
+  ).cnt;
+}
+
+export function getExecutionRecordById(
+  id: string,
+): ExecutionRecord | undefined {
+  return db
+    .prepare('SELECT * FROM execution_records WHERE id = ?')
+    .get(id) as ExecutionRecord | undefined;
 }
 
 /**

@@ -21,6 +21,7 @@ const MonitorPage = lazy(() => import('./pages/MonitorPage').then(m => ({ defaul
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const UsagePage = lazy(() => import('./pages/UsagePage').then(m => ({ default: m.UsagePage })));
 const BillingPage = lazy(() => import('./pages/BillingPage'));
+const ExecutionRecordsPage = lazy(() => import('./pages/ExecutionRecordsPage').then(m => ({ default: m.ExecutionRecordsPage })));
 
 export function App() {
   const Router = shouldUseHashRouter() ? HashRouter : BrowserRouter;
@@ -61,6 +62,7 @@ export function App() {
           <Route path="/chat/:groupFolder?" element={<Suspense fallback={null}><ChatPage /></Suspense>} />
           <Route path="/groups" element={<Navigate to="/settings?tab=groups" replace />} />
           <Route path="/tasks" element={<Suspense fallback={null}><TasksPage /></Suspense>} />
+          <Route path="/records" element={<Suspense fallback={null}><ExecutionRecordsPage /></Suspense>} />
           <Route path="/monitor" element={<AuthGuard requireAdmin><Suspense fallback={null}><MonitorPage /></Suspense></AuthGuard>} />
           <Route path="/usage" element={<Suspense fallback={null}><UsagePage /></Suspense>} />
           <Route path="/billing" element={<Suspense fallback={null}><BillingPage /></Suspense>} />

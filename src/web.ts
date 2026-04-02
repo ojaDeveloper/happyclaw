@@ -55,6 +55,7 @@ import agentDefinitionsRoutes from './routes/agent-definitions.js';
 import { usage as usageRoutes } from './routes/usage.js';
 import billingRoutes from './routes/billing.js';
 import bugReportRoutes from './routes/bug-report.js';
+import executionRecordsRoutes from './routes/execution-records.js';
 import {
   checkBillingAccess,
   formatBillingAccessDeniedMessage,
@@ -182,6 +183,7 @@ app.route('/api', monitorRoutes);
 app.route('/api/usage', usageRoutes);
 app.route('/api/billing', billingRoutes);
 app.route('/api/bug-report', bugReportRoutes);
+app.route('/api/execution-records', executionRecordsRoutes);
 
 // --- POST /api/messages ---
 
@@ -1547,6 +1549,17 @@ export function broadcastBillingUpdate(
   // Send only to the specific user
   const allowedUserIds = new Set([userId]);
   safeBroadcast(msg, false, allowedUserIds);
+}
+
+export function broadcastExecutionRecordUpdate(
+  record: import('./types.js').ExecutionRecord,
+): void {
+  const msg: WsMessageOut = {
+    type: 'execution_record_update',
+    record,
+  };
+  // Broadcast to all authenticated clients; frontend filters by userId for members
+  safeBroadcast(msg);
 }
 
 export function broadcastAgentStatus(

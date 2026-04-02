@@ -83,6 +83,9 @@ import {
   cleanupOldDailyUsage,
   cleanupOldBillingAuditLog,
   insertUsageRecord,
+  createExecutionRecord,
+  updateExecutionRecord,
+  getExecutionRecordByTurnId,
 } from './db.js';
 import { messageInterceptorPipeline } from './message-interceptors.js';
 import { headerInjector } from './interceptors/header-injector.js';
@@ -143,6 +146,7 @@ import {
 } from './billing.js';
 import {
   AgentStatus,
+  ExecutionRecord,
   MessageCursor,
   NewMessage,
   RegisteredGroup,
@@ -166,6 +170,7 @@ import {
   broadcastAgentStatus,
   broadcastGroupCreated,
   broadcastBillingUpdate,
+  broadcastExecutionRecordUpdate,
   shutdownTerminals,
   shutdownWebServer,
   getActiveStreamingTexts,
@@ -186,6 +191,18 @@ const DEFAULT_MAIN_JID = 'web:main';
 const DEFAULT_MAIN_NAME = 'Main';
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9_-]+$/;
 const OOM_EXIT_RE = /code 137/;
+
+/**
+ * Detect IM source channel from JID prefix.
+ */
+function detectSourceChannel(jid: string): string {
+  if (jid.startsWith('web:')) return 'web';
+  if (jid.startsWith('feishu:')) return 'feishu';
+  if (jid.startsWith('telegram:')) return 'telegram';
+  if (jid.startsWith('qq:')) return 'qq';
+  if (jid.startsWith('dingtalk:')) return 'dingtalk';
+  return 'unknown';
+}
 
 /**
  * Feed a stream event into a Feishu streaming card controller.
@@ -2285,6 +2302,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let streamingAccumulatedText = '';
   let streamingAccumulatedThinking = '';
   let streamInterrupted = false;
+
+  // ── Execution Record tracking ──
+  let executionRecordId: string | null = null;
+  const executionToolsUsed = new Set<string>();
+  const executionToolDetails: Array<{ name: string; summary: string; toolUseId?: string }> = [];
+  let executionStartTime = 0;
   if (streamingSession) {
     registerStreamingSession(streamingSessionJid, streamingSession);
     logger.debug({ chatJid }, 'Streaming card session created for Feishu');
@@ -2442,6 +2465,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               // spamming the IM channel. The first substantive reply already
               // delivered the main content; follow-up results are DB-only.
               streamInterrupted = false;
+              // Reset execution record tracking for the new query
+              executionRecordId = null;
+              executionToolsUsed.clear();
+              executionToolDetails.length = 0;
+              executionStartTime = 0;
               streamingSession = imManager.createStreamingSession(
                 streamingSessionJid,
                 makeOnCardCreated(streamingSessionJid),
@@ -2739,6 +2767,217 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               }
             }
 
+            // ── Execution Record tracking ──
+            // Create on first top-level tool_use_start, track all tools (including nested sub-agent calls)
+            if (
+              se.eventType === 'tool_use_start' &&
+              se.toolName
+            ) {
+              // Track tool name (deduplicated) and detail (every call)
+              const isNested = !!(se.isNested || se.parentToolUseId);
+              const displayName = isNested
+                ? `  └ ${se.toolName}`
+                : se.toolName;
+              executionToolsUsed.add(se.toolName);
+              executionToolDetails.push({
+                name: displayName,
+                summary: se.toolInputSummary || '',
+                toolUseId: se.toolUseId || undefined,
+              });
+              // Only create a new execution record on the first top-level tool call
+              if (isNested) {
+                // Update DB with the new nested tool detail
+                if (executionRecordId) {
+                  try {
+                    updateExecutionRecord(executionRecordId, {
+                      tools_used: JSON.stringify([...executionToolsUsed]),
+                      tool_details: JSON.stringify(executionToolDetails),
+                      tool_count: executionToolDetails.length,
+                    });
+                  } catch { /* non-critical */ }
+                }
+              } else
+              if (!executionRecordId) {
+                try {
+                  const turnId =
+                    result.streamEvent.turnId || lastProcessed.id;
+                  // Dedup: check if record already exists for this turn
+                  const existing = getExecutionRecordByTurnId(turnId);
+                  if (existing) {
+                    executionRecordId = existing.id;
+                    executionStartTime = new Date(existing.started_at).getTime();
+                    try {
+                      const prev = JSON.parse(existing.tools_used) as string[];
+                      for (const t of prev) executionToolsUsed.add(t);
+                    } catch { /* ignore parse error */ }
+                    try {
+                      const prevDetails = JSON.parse(existing.tool_details) as typeof executionToolDetails;
+                      executionToolDetails.unshift(...prevDetails);
+                    } catch { /* ignore */ }
+                  } else {
+                    executionRecordId = crypto.randomUUID();
+                    executionStartTime = Date.now();
+                    const sourceJid =
+                      lastProcessed.source_jid || chatJid;
+                    const record: ExecutionRecord = {
+                      id: executionRecordId,
+                      turn_id: turnId,
+                      session_id:
+                        result.streamEvent.sessionId ||
+                        activeSessionId ||
+                        null,
+                      user_id: effectiveGroup.created_by || 'system',
+                      chat_jid: chatJid,
+                      group_folder: effectiveGroup.folder,
+                      group_name: group.name || effectiveGroup.folder,
+                      source_channel: detectSourceChannel(sourceJid),
+                      description: (lastProcessed.content || '').slice(
+                        0,
+                        500,
+                      ),
+                      status: 'running',
+                      tools_used: JSON.stringify([...executionToolsUsed]),
+                      tool_details: JSON.stringify(executionToolDetails),
+                      tool_count: executionToolDetails.length,
+                      model: configuredModel || null,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      cost_usd: 0,
+                      duration_ms: 0,
+                      started_at: new Date(executionStartTime).toISOString(),
+                      completed_at: null,
+                      agent_id: null,
+                      error: null,
+                    };
+                    createExecutionRecord(record);
+                    broadcastExecutionRecordUpdate(record);
+                  }
+                } catch (err) {
+                  logger.warn(
+                    { err, chatJid },
+                    'Failed to create execution record',
+                  );
+                }
+              } else {
+                // Update tools for subsequent tool calls
+                try {
+                  updateExecutionRecord(executionRecordId, {
+                    tools_used: JSON.stringify([...executionToolsUsed]),
+                    tool_details: JSON.stringify(executionToolDetails),
+                    tool_count: executionToolDetails.length,
+                  });
+                } catch (err) {
+                  logger.warn(
+                    { err, chatJid },
+                    'Failed to update execution record tools',
+                  );
+                }
+              }
+            }
+
+            // Update tool details when tool_progress arrives with summary
+            if (
+              se.eventType === 'tool_progress' &&
+              se.toolInputSummary &&
+              se.toolUseId &&
+              executionRecordId
+            ) {
+              // Find the matching tool detail entry and update its summary
+              const detail = executionToolDetails.find(
+                (d) => d.toolUseId === se.toolUseId && !d.summary,
+              );
+              if (detail) {
+                detail.summary = se.toolInputSummary;
+                try {
+                  updateExecutionRecord(executionRecordId, {
+                    tool_details: JSON.stringify(executionToolDetails),
+                  });
+                } catch { /* non-critical */ }
+              }
+            }
+
+            // Update tool details when task_start arrives (Agent/Task tools)
+            // These special tools skip generic input tracking, so their summary
+            // comes via taskDescription in the task_start event instead.
+            if (
+              se.eventType === 'task_start' &&
+              se.toolUseId &&
+              se.taskDescription &&
+              executionRecordId
+            ) {
+              const detail = executionToolDetails.find(
+                (d) => d.toolUseId === se.toolUseId && !d.summary,
+              );
+              if (detail) {
+                detail.summary = se.taskDescription;
+                try {
+                  updateExecutionRecord(executionRecordId, {
+                    tool_details: JSON.stringify(executionToolDetails),
+                  });
+                } catch { /* non-critical */ }
+              }
+            }
+
+            // Finalize execution record on usage event (token/cost data)
+            if (se.eventType === 'usage' && se.usage && executionRecordId) {
+              try {
+                const now = Date.now();
+                const updates: Parameters<typeof updateExecutionRecord>[1] = {
+                  status: 'completed' as const,
+                  completed_at: new Date(now).toISOString(),
+                  duration_ms: now - executionStartTime,
+                  tools_used: JSON.stringify([...executionToolsUsed]),
+                  tool_details: JSON.stringify(executionToolDetails),
+                  tool_count: executionToolDetails.length,
+                  input_tokens: se.usage.inputTokens || 0,
+                  output_tokens: se.usage.outputTokens || 0,
+                  cost_usd: se.usage.costUSD || 0,
+                };
+                if (se.usage.modelUsage) {
+                  const models = Object.keys(se.usage.modelUsage);
+                  if (models.length > 0) updates.model = models[0];
+                }
+                updateExecutionRecord(executionRecordId, updates);
+                const completed = getExecutionRecordByTurnId(
+                  result.streamEvent.turnId || lastProcessed.id,
+                );
+                if (completed) broadcastExecutionRecordUpdate(completed);
+              } catch (err) {
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to finalize execution record',
+                );
+              }
+            }
+
+            // Mark execution record as interrupted
+            if (
+              se.eventType === 'status' &&
+              se.statusText === 'interrupted' &&
+              executionRecordId
+            ) {
+              try {
+                const now = Date.now();
+                updateExecutionRecord(executionRecordId, {
+                  status: 'interrupted',
+                  completed_at: new Date(now).toISOString(),
+                  duration_ms: now - executionStartTime,
+                  tools_used: JSON.stringify([...executionToolsUsed]),
+                  tool_details: JSON.stringify(executionToolDetails),
+                  tool_count: executionToolDetails.length,
+                });
+                const interrupted = getExecutionRecordByTurnId(
+                  result.streamEvent.turnId || lastProcessed.id,
+                );
+                if (interrupted) broadcastExecutionRecordUpdate(interrupted);
+              } catch (err) {
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to mark execution record as interrupted',
+                );
+              }
+            }
+
             // Reset idle timer on stream events so long-running tool calls
             // (e.g. MCP batch writes) don't get killed while the agent is
             // actively working. Previously only final results triggered a reset.
@@ -2943,6 +3182,42 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               // until process exit would cause duplicate replay after restart.
               commitCursor();
             }
+            // ── Finalize execution record on final reply ──
+            // This is the most reliable completion signal — the agent produced a
+            // visible result. Covers cases where the usage event is missing
+            // (third-party models like DeepSeek may not return compatible usage data).
+            if (
+              executionRecordId &&
+              result.sourceKind !== 'overflow_partial' &&
+              result.sourceKind !== 'compact_partial'
+            ) {
+              try {
+                const existing = getExecutionRecordByTurnId(
+                  result.turnId || lastProcessed.id,
+                );
+                if (existing && existing.status === 'running') {
+                  const now = Date.now();
+                  updateExecutionRecord(executionRecordId, {
+                    status: 'completed',
+                    completed_at: new Date(now).toISOString(),
+                    duration_ms: now - executionStartTime,
+                    tools_used: JSON.stringify([...executionToolsUsed]),
+                    tool_details: JSON.stringify(executionToolDetails),
+                    tool_count: executionToolDetails.length,
+                  });
+                  const completed = getExecutionRecordByTurnId(
+                    result.turnId || lastProcessed.id,
+                  );
+                  if (completed) broadcastExecutionRecordUpdate(completed);
+                }
+              } catch (err) {
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to finalize execution record on result',
+                );
+              }
+            }
+
             // Only reset idle timer on actual results, not session-update markers (result: null)
             resetIdleTimer();
           }
@@ -2950,6 +3225,29 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           if (result.status === 'error') {
             hadError = true;
             if (result.error) lastError = result.error;
+            // Mark execution record as failed
+            if (executionRecordId) {
+              try {
+                const now = Date.now();
+                updateExecutionRecord(executionRecordId, {
+                  status: 'failed',
+                  completed_at: new Date(now).toISOString(),
+                  duration_ms: now - executionStartTime,
+                  tool_details: JSON.stringify(executionToolDetails),
+                  tool_count: executionToolDetails.length,
+                  error: result.error || 'Unknown error',
+                });
+                const failed = getExecutionRecordByTurnId(
+                  result.streamEvent?.turnId || lastProcessed.id,
+                );
+                if (failed) broadcastExecutionRecordUpdate(failed);
+              } catch (err) {
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to mark execution record as failed',
+                );
+              }
+            }
           }
         } catch (err) {
           logger.error({ group: group.name, err }, 'onOutput callback failed');
@@ -3045,6 +3343,33 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       } catch (err) {
         logger.warn({ err, chatJid }, 'Failed to save overflow partial text');
       }
+    }
+  }
+
+  // ── Safety-net: ensure execution record is finalized when agent process ends ──
+  // If usage event was missed (process killed, timeout, OOM), close the record here.
+  if (executionRecordId) {
+    try {
+      const existing = getExecutionRecordByTurnId(
+        lastProcessed.id,
+      );
+      if (existing && existing.status === 'running') {
+        const now = Date.now();
+        const finalStatus = hadError ? 'failed' : 'completed';
+        updateExecutionRecord(executionRecordId, {
+          status: finalStatus,
+          completed_at: new Date(now).toISOString(),
+          duration_ms: now - executionStartTime,
+          tools_used: JSON.stringify([...executionToolsUsed]),
+          tool_details: JSON.stringify(executionToolDetails),
+          tool_count: executionToolDetails.length,
+          error: hadError ? lastError || 'Agent process ended unexpectedly' : undefined,
+        });
+        const finalized = getExecutionRecordByTurnId(lastProcessed.id);
+        if (finalized) broadcastExecutionRecordUpdate(finalized);
+      }
+    } catch (err) {
+      logger.warn({ err, chatJid }, 'Failed to finalize execution record in cleanup');
     }
   }
 

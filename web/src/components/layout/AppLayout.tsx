@@ -57,6 +57,18 @@ export function AppLayout() {
     return () => { unsub(); };
   }, []);
 
+  // 监听 execution_record_update，实时更新执行记录
+  useEffect(() => {
+    const unsub = wsManager.on('execution_record_update', (data: any) => {
+      if (data.record) {
+        import('../../stores/execution-records').then((m) =>
+          m.useExecutionRecordsStore.getState().handleRecordUpdate(data.record),
+        );
+      }
+    });
+    return () => { unsub(); };
+  }, []);
+
   // 全局监听 agent_status，确保不在 ChatView 页面时也能更新 sub-agent 状态
   useEffect(() => {
     const unsub = wsManager.on('agent_status', (data: any) => {
