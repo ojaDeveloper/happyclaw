@@ -186,7 +186,6 @@ interface ChatState {
   refreshMessages: (jid: string) => Promise<void>;
   sendMessage: (jid: string, content: string, attachments?: Array<{ data: string; mimeType: string }>) => Promise<void>;
   stopGroup: (jid: string) => Promise<boolean>;
-  switchModel: (jid: string, model: string, fallbackModel?: string) => Promise<boolean>;
   interruptQuery: (jid: string) => Promise<boolean>;
   resetSession: (jid: string, agentId?: string) => Promise<boolean>;
   clearHistory: (jid: string) => Promise<boolean>;
@@ -971,19 +970,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         delete next[jid];
         return { waiting: next };
       });
-      return true;
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-      return false;
-    }
-  },
-
-  switchModel: async (jid: string, model: string, fallbackModel?: string) => {
-    try {
-      await api.post<{ success: boolean; applied: boolean }>(
-        `/api/groups/${encodeURIComponent(jid)}/switch-model`,
-        { model, fallbackModel },
-      );
       return true;
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });

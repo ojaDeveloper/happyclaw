@@ -494,31 +494,6 @@ export class GroupQueue {
   }
 
   /**
-   * Send a model switch command to the active container via IPC.
-   * The new model takes effect on the next query() call.
-   */
-  switchModel(groupJid: string, model: string, fallbackModel?: string): 'sent' | 'no_active' {
-    const state = this.resolveActiveState(groupJid);
-    if (!state) return 'no_active';
-
-    const inputDir = this.resolveIpcInputDir(state);
-    try {
-      fs.mkdirSync(inputDir, { recursive: true });
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
-      const filepath = path.join(inputDir, filename);
-      const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(
-        tempPath,
-        JSON.stringify({ type: 'switch_model', model, fallbackModel }),
-      );
-      fs.renameSync(tempPath, filepath);
-      return 'sent';
-    } catch {
-      return 'no_active';
-    }
-  }
-
-  /**
    * Signal the active container to wind down by writing a close sentinel.
    */
   closeStdin(groupJid: string): void {

@@ -708,7 +708,6 @@ function shouldDrain(): boolean {
  */
 interface IpcDrainResult {
   messages: Array<{ text: string; images?: Array<{ data: string; mimeType?: string }> }>;
-  modelSwitched?: boolean;
 }
 
 function drainIpcInput(): IpcDrainResult {
@@ -728,12 +727,6 @@ function drainIpcInput(): IpcDrainResult {
             text: data.text,
             images: data.images,
           });
-        } else if (data.type === 'switch_model' && data.model) {
-          const oldModel = CLAUDE_MODEL;
-          CLAUDE_MODEL = data.model;
-          if (data.fallbackModel) FALLBACK_MODEL = data.fallbackModel === CLAUDE_MODEL ? undefined : data.fallbackModel;
-          log(`Model switched: ${oldModel} → ${CLAUDE_MODEL} (fallback: ${FALLBACK_MODEL ?? 'none'})`);
-          result.modelSwitched = true;
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);

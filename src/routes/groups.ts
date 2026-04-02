@@ -981,30 +981,6 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
   return c.json({ success: true, interrupted });
 });
 
-// POST /api/groups/:jid/switch-model - 会话中切换模型
-groupRoutes.post('/:jid/switch-model', authMiddleware, async (c) => {
-  const deps = getWebDeps();
-  if (!deps) return c.json({ error: 'Server not initialized' }, 500);
-
-  const jid = c.req.param('jid');
-  const group = getRegisteredGroup(jid);
-  if (!group) return c.json({ error: 'Group not found' }, 404);
-  const authUser = c.get('user') as AuthUser;
-  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
-    return c.json({ error: 'Group not found' }, 404);
-  }
-
-  const body = await c.req.json().catch(() => ({}));
-  const model = body?.model;
-  if (!model || typeof model !== 'string') {
-    return c.json({ error: 'model is required' }, 400);
-  }
-  const fallbackModel = typeof body?.fallbackModel === 'string' ? body.fallbackModel : undefined;
-
-  const result = deps.queue.switchModel(jid, model, fallbackModel);
-  return c.json({ success: true, applied: result === 'sent' });
-});
-
 // POST /api/groups/:jid/reset-session - 重置会话上下文
 // Optional body: { agentId?: string } — when provided, only reset that agent's session
 groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {

@@ -13,6 +13,17 @@ import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 const ShareImageDialog = lazy(() => import('./ShareImageDialog').then(m => ({ default: m.ShareImageDialog })));
 
+/** 从 source_jid / chat_jid 解析 IM 渠道标签，Web 来源返回 null（不显示） */
+function getChannelLabel(message: Message): string | null {
+  const jid = message.source_jid || message.chat_jid;
+  if (jid.startsWith('feishu:')) return '飞书';
+  if (jid.startsWith('telegram:')) return 'Telegram';
+  if (jid.startsWith('qq:')) return 'QQ';
+  if (jid.startsWith('dingtalk:')) return '钉钉';
+  if (jid.startsWith('wechat:')) return '微信';
+  return null;
+}
+
 interface MessageBubbleProps {
   message: Message;
   showTime: boolean;
@@ -143,6 +154,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
   const { mode: displayMode } = useDisplayMode();
   const isUser = !message.is_from_me;
   const isOtherUser = isShared && isUser && message.sender !== currentUser?.id;
+  const channelLabel = getChannelLabel(message);
   const time = new Date(message.timestamp)
     .toLocaleString('zh-CN', {
       year: 'numeric',
@@ -297,6 +309,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
         {/* Sender line — no avatars in compact mode */}
         <div className="flex items-center gap-1.5 mb-1">
           <span className={`text-xs font-semibold ${isAI ? 'text-primary' : 'text-muted-foreground'}`}>{senderName}</span>
+          {channelLabel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">{channelLabel}</span>}
           {showTime && <span className="text-[11px] text-muted-foreground">{time}</span>}
           <button
             onClick={handleCopy}
@@ -364,6 +377,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               {initial}
             </div>
             <span className="text-xs text-muted-foreground font-medium">{otherName}</span>
+            {channelLabel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">{channelLabel}</span>}
             {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
           </div>
 
@@ -376,6 +390,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             <div className="flex-1 min-w-0">
               <div className="hidden lg:flex items-center gap-2 mb-1">
                 <span className="text-xs text-muted-foreground font-medium">{otherName}</span>
+                {channelLabel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">{channelLabel}</span>}
                 {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
               </div>
               <div className="relative">
@@ -472,8 +487,11 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               </button>
             )}
           </div>
-          {showTime && (
-            <span className="text-xs text-muted-foreground mt-1.5 mr-1">{time}</span>
+          {(showTime || channelLabel) && (
+            <div className="flex items-center gap-1.5 mt-1.5 mr-1">
+              {channelLabel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">{channelLabel}</span>}
+              {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
+            </div>
           )}
         </div>
 
@@ -509,6 +527,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       <div className="flex items-center gap-2 mb-1.5 lg:hidden">
         <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
         <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
+        {channelLabel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">{channelLabel}</span>}
         {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
       </div>
 
@@ -521,6 +540,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           {/* Desktop: name + time row */}
           <div className="hidden lg:flex items-center gap-2 mb-1">
             <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
+            {channelLabel && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">{channelLabel}</span>}
             {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
           </div>
 
