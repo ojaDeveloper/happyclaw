@@ -337,11 +337,18 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     }
   }
 
-  // 1. User-global memory + heartbeat
-  files.add(path.join(USER_GLOBAL_DIR, user.id, 'CLAUDE.md'));
-  const heartbeatPath = path.join(USER_GLOBAL_DIR, user.id, 'HEARTBEAT.md');
-  if (fs.existsSync(heartbeatPath)) {
-    files.add(heartbeatPath);
+  // 1. User-global memory: scan all matching files in user-global/{userId}/
+  const userGlobalDir = path.join(USER_GLOBAL_DIR, user.id);
+  files.add(path.join(userGlobalDir, 'CLAUDE.md')); // always include even if missing
+  if (fs.existsSync(userGlobalDir)) {
+    try {
+      const entries = fs.readdirSync(userGlobalDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const fullPath = path.join(userGlobalDir, entry.name);
+        if (isMemoryCandidateFile(fullPath)) files.add(fullPath);
+      }
+    } catch { /* skip unreadable */ }
   }
 
   // 2. Group CLAUDE.md files

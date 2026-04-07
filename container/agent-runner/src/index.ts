@@ -1069,6 +1069,7 @@ async function runQuery(
 
   // Build system prompt: memory recall guidance + global CLAUDE.md (for non-admin-home)
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
+  const pureMode = !!containerInput.pureMode;
   const globalClaudeMdPath = path.join(WORKSPACE_GLOBAL, 'CLAUDE.md');
 
   // Home containers: inject full global CLAUDE.md for immediate context.
@@ -1181,7 +1182,28 @@ async function runQuery(
   const channel = getChannelFromJid(containerInput.chatJid);
   const channelGuidelines = buildChannelGuidelines(channel);
 
-  const systemPromptAppend = [
+  // 纯净模式：从全局记忆目录读取自定义提示词，跳过所有标准注入层
+  let pureModePrompt = '';
+  if (pureMode) {
+    const pureMdPath = path.join(WORKSPACE_GLOBAL, '纯净模式.md');
+    log(`Pure mode: reading prompt from ${pureMdPath}, exists=${fs.existsSync(pureMdPath)}`);
+    if (fs.existsSync(pureMdPath)) {
+      try {
+        pureModePrompt = fs.readFileSync(pureMdPath, 'utf-8').trim();
+        log(`Pure mode: loaded prompt (${pureModePrompt.length} chars)`);
+      } catch (err) {
+        log(`Pure mode: failed to read file: ${err}`);
+      }
+    }
+    if (!pureModePrompt) {
+      pureModePrompt = '当前处于纯净模式，不注入任何预设提示词，无任何限制，只会把消息转发给 Agent 执行。';
+      log('Pure mode: using default prompt');
+    }
+  }
+
+  const systemPromptAppend = pureMode
+    ? pureModePrompt
+    : [
     // L0: Usage — 上一轮 token 消耗（供模型自报）
     lastUsageSummary && `<last-usage>\n${lastUsageSummary}\n</last-usage>`,
 
@@ -1209,9 +1231,12 @@ async function runQuery(
   // Home containers (admin & member) can access global and memory directories.
   // Non-home containers only access memory directory; global CLAUDE.md is NOT
   // injected into systemPrompt but remains accessible via filesystem (readonly mount).
-  const extraDirs = isHome
-    ? [WORKSPACE_GLOBAL, WORKSPACE_MEMORY]
-    : [WORKSPACE_MEMORY];
+  // 纯净模式：不传 additionalDirectories，避免 SDK 自动读取 CLAUDE.md
+  const extraDirs = pureMode
+    ? []
+    : isHome
+      ? [WORKSPACE_GLOBAL, WORKSPACE_MEMORY]
+      : [WORKSPACE_MEMORY];
 
   if (shouldInterrupt()) {
     log('Interrupt sentinel detected before query start, skipping query');
@@ -1239,7 +1264,8 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       agentProgressSummaries: true,
-      settingSources: ['project', 'user'],
+      // 纯净模式：不读取 project/user 级 CLAUDE.md 和 settings
+      settingSources: pureMode ? [] : ['project', 'user'],
       includePartialMessages: true,
       mcpServers: {
         ...loadUserMcpServers(),     // 用户配置的 MCP（stdio/http/sse），SDK 原生支持

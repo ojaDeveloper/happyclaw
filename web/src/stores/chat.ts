@@ -1647,6 +1647,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
 
+    // 纯净模式切换时刷新 group 数据，更新头部标识
+    if (msg.content.startsWith('system_info:') && msg.content.includes('纯净模式')) {
+      get().loadGroups();
+    }
+
     // query_interrupted 仅作为视觉分隔线，不清理流式状态。
     // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
     // 兜底：20s 后若两个事件均未到达（如 agent runner 异常），强制清理。

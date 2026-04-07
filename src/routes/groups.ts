@@ -155,6 +155,7 @@ interface GroupPayloadItem {
   member_count?: number;
   pinned_at?: string;
   activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'disabled';
+  pure_mode?: boolean;
 }
 
 function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
@@ -263,6 +264,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       member_count: isShared ? memberInfo?.count : undefined,
       pinned_at: pins[jid] || undefined,
       activation_mode: group.activation_mode ?? 'auto',
+      pure_mode: !!group.pure_mode || undefined,
     };
   }
 

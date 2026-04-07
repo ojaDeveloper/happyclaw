@@ -428,6 +428,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 </span>
               </>
             )}
+            {group.pure_mode && (
+              <>
+                <span className="text-muted-foreground/40">·</span>
+                <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-medium bg-violet-100 text-violet-700">
+                  纯净模式
+                </span>
+              </>
+            )}
             {isOwnHome && imStatus && (imStatus.feishu || imStatus.telegram) && (
               <>
                 <span className="text-muted-foreground/40">·</span>

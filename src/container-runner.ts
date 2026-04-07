@@ -113,6 +113,7 @@ export interface ContainerInput {
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
+  pureMode?: boolean;
 }
 
 export interface ContainerOutput {

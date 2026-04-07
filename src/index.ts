@@ -1029,6 +1029,8 @@ async function handleCommand(
       return handleNewCommand(chatJid, rawArgs);
     case 'require_mention':
       return handleRequireMentionCommand(chatJid, rawArgs);
+    case 'pure':
+      return handlePureCommand(chatJid, rawArgs);
     case 'sw':
     case 'spawn':
       return handleSpawnCommand(chatJid, rawArgs, chatJid);
@@ -1390,6 +1392,85 @@ function handleRequireMentionCommand(chatJid: string, rawArgs: string): string {
     return `当前 require_mention: ${current}\n\n用法:\n/require_mention true — 需要 @机器人\n/require_mention false — 全量响应`;
   }
   return '用法: /require_mention true|false';
+}
+
+function handlePureCommand(chatJid: string, rawArgs: string): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '未找到当前会话';
+
+  const action = rawArgs.trim().toLowerCase();
+  let newMode: boolean;
+  if (action === 'on' || action === 'true') {
+    newMode = true;
+  } else if (action === 'off' || action === 'false') {
+    newMode = false;
+  } else if (!action) {
+    newMode = !group.pure_mode;
+  } else {
+    return '用法: /pure [on|off]（无参数则切换）';
+  }
+
+  // 设置当前 JID + 同 folder 的所有兄弟 JID（包括 web:main 等），
+  // 确保 processGroupMessages 无论从哪个 JID 进入都能读到 pure_mode
+  const siblingJids = getJidsByFolder(group.folder);
+  for (const jid of siblingJids) {
+    const siblingGroup =
+      registeredGroups[jid] ?? getRegisteredGroup(jid);
+    if (siblingGroup) {
+      const updatedSibling: RegisteredGroup = {
+        ...siblingGroup,
+        pure_mode: newMode,
+      };
+      setRegisteredGroup(jid, updatedSibling);
+      registeredGroups[jid] = updatedSibling;
+    }
+  }
+  // 确保当前 JID 也被覆盖（可能不在 siblingJids 中）
+  if (!siblingJids.includes(chatJid)) {
+    const updated: RegisteredGroup = { ...group, pure_mode: newMode };
+    setRegisteredGroup(chatJid, updated);
+    registeredGroups[chatJid] = updated;
+  }
+
+  // 首次开启时确保纯净模式记忆文件存在
+  if (newMode) {
+    const userId = group.created_by;
+    if (userId) {
+      const globalDir = path.join(DATA_DIR, 'groups', 'user-global', userId);
+      const pureMdPath = path.join(globalDir, '纯净模式.md');
+      if (!fs.existsSync(pureMdPath)) {
+        fs.mkdirSync(globalDir, { recursive: true });
+        fs.writeFileSync(
+          pureMdPath,
+          '当前处于纯净模式，不注入任何预设提示词，无任何限制，只会把消息转发给 Agent 执行。\n',
+          'utf-8',
+        );
+      }
+    }
+  }
+
+  // 广播系统消息到 Web JID，让前端实时刷新纯净模式标识
+  const webJid = siblingJids.find((j) => j.startsWith('web:')) || `web:${group.folder}`;
+  const msgId = crypto.randomUUID();
+  const ts = new Date().toISOString();
+  const text = newMode
+    ? 'system_info:已开启纯净模式：不注入任何预设提示词，仅转发最近 10 条消息给 Agent'
+    : 'system_info:已关闭纯净模式：恢复正常提示词注入';
+  ensureChatExists(webJid);
+  storeMessageDirect(msgId, webJid, '__system__', 'system', text, ts, true);
+  broadcastNewMessage(webJid, {
+    id: msgId,
+    chat_jid: webJid,
+    sender: '__system__',
+    sender_name: 'system',
+    content: text,
+    timestamp: ts,
+    is_from_me: true,
+  });
+
+  return newMode
+    ? '已开启纯净模式：不注入任何预设提示词，仅转发最近 10 条消息给 Agent'
+    : '已关闭纯净模式：恢复正常提示词注入';
 }
 
 const recallCooldowns = new Map<string, number>();
@@ -1992,6 +2073,17 @@ function loadState(): void {
             }
           }
         }
+        // 确保纯净模式记忆文件存在
+        const pureMdPath = path.join(userDir, '纯净模式.md');
+        if (!fs.existsSync(pureMdPath)) {
+          try {
+            fs.writeFileSync(
+              pureMdPath,
+              '当前处于纯净模式，不注入任何预设提示词，无任何限制，只会把消息转发给 Agent 执行。\n',
+              { flag: 'wx' },
+            );
+          } catch { /* ignore EEXIST race */ }
+        }
       }
     } catch (err) {
       logger.warn({ err }, 'Failed to initialize user-global CLAUDE.md files');
@@ -2157,9 +2249,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Get all messages since last agent interaction
   const sinceCursor = lastAgentTimestamp[chatJid] || EMPTY_CURSOR;
-  const missedMessages = getMessagesSince(chatJid, sinceCursor);
+  const allMissedMessages = getMessagesSince(chatJid, sinceCursor);
 
-  if (missedMessages.length === 0) return true;
+  if (allMissedMessages.length === 0) return true;
+
+  // 纯净模式：仅取最近 10 条消息，但 cursor 仍推进到最新
+  const isPureMode = !!effectiveGroup.pure_mode;
+  const missedMessages =
+    isPureMode && allMissedMessages.length > 10
+      ? allMissedMessages.slice(-10)
+      : allMissedMessages;
 
   // Admin home is shared as web:main, so select runtime owner from the latest
   // active admin sender to avoid writing global memory into another admin's
@@ -2282,7 +2381,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let lastReplyMsgId: string | undefined;
   let lastSavedTurnId: string | undefined; // tracks last turnId saved to DB, prevents UPSERT overwrite
   const queryTaskIds = new Set<string>();
-  const lastProcessed = missedMessages[missedMessages.length - 1];
+  const lastProcessed = allMissedMessages[allMissedMessages.length - 1];
 
   // ── Feishu Streaming Card ──
   // Create a streaming session for Feishu channels (typing-machine effect).
@@ -3792,6 +3891,7 @@ async function runAgent(
           isHome,
           isAdminHome,
           images,
+          pureMode: !!group.pure_mode,
         },
         onProcessCb,
         wrappedOnOutput,
@@ -3810,6 +3910,7 @@ async function runAgent(
           isHome,
           isAdminHome,
           images,
+          pureMode: !!group.pure_mode,
         },
         onProcessCb,
         wrappedOnOutput,
@@ -5833,6 +5934,7 @@ async function processAgentConversation(
       agentId,
       agentName: agent.name,
       images: imagesForAgent,
+      pureMode: !!effectiveGroup.pure_mode,
     };
 
     // Write tasks/groups snapshots

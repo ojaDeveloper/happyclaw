@@ -53,6 +53,7 @@ export interface RegisteredGroup {
   activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'disabled'; // 消息门控模式（默认 'auto'，兼容 require_mention）
   mcp_mode?: 'inherit' | 'custom'; // MCP 配置模式（默认 'inherit' 继承用户配置）
   selected_mcps?: string[] | null; // custom 模式下选中的 MCP server IDs
+  pure_mode?: boolean; // 纯净模式：跳过所有提示词注入，仅转发消息
 }
 
 export interface GroupMember {

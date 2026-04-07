@@ -65,6 +65,7 @@ import {
 import {
   ensureChatExists,
   getRegisteredGroup,
+  setRegisteredGroup,
   getJidsByFolder,
   storeMessageDirect,
   deleteUserSession,
@@ -210,6 +211,51 @@ app.post('/api/messages', authMiddleware, async (c) => {
       { error: 'Insufficient permissions for host execution mode' },
       403,
     );
+  }
+
+  // ── /pure command: toggle pure mode (intercepted before entering message pipeline) ──
+  if (content.trim().toLowerCase().startsWith('/pure')) {
+    const rawArgs = content.trim().slice(5).trim().toLowerCase();
+    const targetGroup = getRegisteredGroup(chatJid);
+    if (targetGroup) {
+      let newMode: boolean;
+      if (rawArgs === 'on' || rawArgs === 'true') {
+        newMode = true;
+      } else if (rawArgs === 'off' || rawArgs === 'false') {
+        newMode = false;
+      } else {
+        newMode = !targetGroup.pure_mode;
+      }
+      // 同步所有兄弟 JID（DB + 内存缓存，与 IM 端 handlePureCommand 一致）
+      const siblingJids = getJidsByFolder(targetGroup.folder);
+      const memCache = deps?.getRegisteredGroups();
+      for (const jid of siblingJids) {
+        const siblingGroup = getRegisteredGroup(jid);
+        if (siblingGroup) {
+          const updatedSibling = { ...siblingGroup, pure_mode: newMode };
+          setRegisteredGroup(jid, updatedSibling);
+          if (memCache) memCache[jid] = updatedSibling;
+        }
+      }
+      if (!siblingJids.includes(chatJid)) {
+        const updated = { ...targetGroup, pure_mode: newMode };
+        setRegisteredGroup(chatJid, updated);
+        if (memCache) memCache[chatJid] = updated;
+      }
+      const msgId = crypto.randomUUID();
+      const ts = new Date().toISOString();
+      const text = newMode
+        ? 'system_info:已开启纯净模式：不注入任何预设提示词，仅转发最近 10 条消息给 Agent'
+        : 'system_info:已关闭纯净模式：恢复正常提示词注入';
+      ensureChatExists(chatJid);
+      storeMessageDirect(msgId, chatJid, '__system__', 'system', text, ts, true);
+      broadcastNewMessage(chatJid, {
+        id: msgId, chat_jid: chatJid,
+        sender: '__system__', sender_name: 'system',
+        content: text, timestamp: ts, is_from_me: true,
+      });
+      return c.json({ success: true, messageId: msgId, timestamp: ts });
+    }
   }
 
   const result = await handleWebUserMessage(
@@ -826,6 +872,63 @@ function setupWebSocket(server: any): WebSocketServer {
                   is_from_me: true,
                 });
               }
+            }
+            return;
+          }
+
+          // ── /pure command: toggle pure mode ──
+          if (content.trim().toLowerCase().startsWith('/pure') && deps) {
+            const rawArgs = content.trim().slice(5).trim().toLowerCase();
+            const targetGroup = getRegisteredGroup(chatJid);
+            if (targetGroup) {
+              let newMode: boolean;
+              if (rawArgs === 'on' || rawArgs === 'true') {
+                newMode = true;
+              } else if (rawArgs === 'off' || rawArgs === 'false') {
+                newMode = false;
+              } else {
+                newMode = !targetGroup.pure_mode;
+              }
+              // 同步所有兄弟 JID（DB + 内存缓存）
+              const wsSiblingJids = getJidsByFolder(targetGroup.folder);
+              const wsMemCache = deps.getRegisteredGroups();
+              for (const jid of wsSiblingJids) {
+                const siblingGroup = getRegisteredGroup(jid);
+                if (siblingGroup) {
+                  const updatedSibling = { ...siblingGroup, pure_mode: newMode };
+                  setRegisteredGroup(jid, updatedSibling);
+                  wsMemCache[jid] = updatedSibling;
+                }
+              }
+              if (!wsSiblingJids.includes(chatJid)) {
+                const updated = { ...targetGroup, pure_mode: newMode };
+                setRegisteredGroup(chatJid, updated);
+                wsMemCache[chatJid] = updated;
+              }
+              const msgId = crypto.randomUUID();
+              const ts = new Date().toISOString();
+              const text = newMode
+                ? 'system_info:已开启纯净模式：不注入任何预设提示词，仅转发最近 10 条消息给 Agent'
+                : 'system_info:已关闭纯净模式：恢复正常提示词注入';
+              ensureChatExists(chatJid);
+              storeMessageDirect(
+                msgId,
+                chatJid,
+                '__system__',
+                'system',
+                text,
+                ts,
+                true,
+              );
+              broadcastNewMessage(chatJid, {
+                id: msgId,
+                chat_jid: chatJid,
+                sender: '__system__',
+                sender_name: 'system',
+                content: text,
+                timestamp: ts,
+                is_from_me: true,
+              });
             }
             return;
           }

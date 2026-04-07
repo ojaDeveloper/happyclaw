@@ -24,6 +24,8 @@ export interface ContainerInput {
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
+  /** Pure mode: skip all custom prompt injection, only forward messages. */
+  pureMode?: boolean;
 }
 
 export interface ContainerOutput {

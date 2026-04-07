@@ -1236,7 +1236,10 @@ export function initDatabase(): void {
   ensureColumn('execution_records', 'group_name', 'TEXT');
   ensureColumn('execution_records', 'tool_details', "TEXT NOT NULL DEFAULT '[]'");
 
-  const SCHEMA_VERSION = '35';
+  // v35 → v36: Add pure_mode to registered_groups
+  ensureColumn('registered_groups', 'pure_mode', 'INTEGER DEFAULT 0');
+
+  const SCHEMA_VERSION = '36';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -2221,6 +2224,7 @@ type RegisteredGroupRow = {
   activation_mode: string | null;
   mcp_mode: string | null;
   selected_mcps: string | null;
+  pure_mode: number;
 };
 
 /** Convert a raw DB row into a RegisteredGroup domain object. */
@@ -2246,6 +2250,7 @@ function parseGroupRow(
     reply_policy: row.reply_policy === 'mirror' ? 'mirror' : 'source_only',
     require_mention: row.require_mention === 1,
     activation_mode: parseActivationMode(row.activation_mode),
+    pure_mode: row.pure_mode === 1,
   };
 }
 
@@ -2276,8 +2281,8 @@ export function getRegisteredGroup(
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention, activation_mode, mcp_mode, selected_mcps)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention, activation_mode, mcp_mode, selected_mcps, pure_mode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -2298,6 +2303,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.activation_mode ?? 'auto',
     'inherit', // mcp_mode: deprecated, always inherit (user-level MCP applies globally)
     null, // selected_mcps: deprecated, always null
+    group.pure_mode ? 1 : 0,
   );
 }
 
