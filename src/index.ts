@@ -1928,26 +1928,21 @@ function loadState(): void {
     logger.warn({ err }, 'Failed to ensure user home groups');
   }
 
-  // Enforce execution mode on all is_home groups:
-  // - admin home → host mode
-  // - member home → container mode
+  // Enforce execution mode on admin home group only.
+  // Member home groups respect the executionMode saved in DB (can be host or container).
   for (const [jid, group] of Object.entries(registeredGroups)) {
     if (!group.is_home) continue;
 
-    // Determine expected mode based on the owner's role
-    // Admin home groups use host mode, member home groups use container mode
     const isAdminHome = group.folder === MAIN_GROUP_FOLDER;
-    const expectedMode = isAdminHome ? 'host' : 'container';
-
-    if (group.executionMode !== expectedMode) {
-      group.executionMode = expectedMode;
+    // Only admin home is forced to host mode; member keeps their configured mode
+    if (isAdminHome && group.executionMode !== 'host') {
+      group.executionMode = 'host';
       setRegisteredGroup(jid, group);
       registeredGroups[jid] = group;
-      // 清除旧 session，避免恢复不兼容的 session
       if (sessions[group.folder]) {
         logger.info(
-          { folder: group.folder, expectedMode },
-          'Clearing stale session during execution mode migration',
+          { folder: group.folder },
+          'Clearing stale session during admin execution mode fix',
         );
         delete sessions[group.folder];
         deleteSession(group.folder);

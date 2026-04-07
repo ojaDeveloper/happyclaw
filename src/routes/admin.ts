@@ -37,6 +37,7 @@ import {
   createInviteCode as dbCreateInviteCode,
   deleteInviteCode,
   queryAuthAuditLogs,
+  ensureUserHomeGroup,
 } from '../db.js';
 import {
   validateUsername,
@@ -128,6 +129,7 @@ adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
     permissions,
     must_change_password,
     notes,
+    execution_mode,
   } = validation.data;
   const actor = c.get('user') as AuthUser;
 
@@ -190,6 +192,14 @@ adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
     throw err;
   }
 
+  // Create the user's home group immediately (don't wait for restart)
+  ensureUserHomeGroup(
+    userId,
+    finalRole as 'admin' | 'member',
+    username,
+    execution_mode,
+  );
+
   logAuthEvent({
     event_type: 'user_created',
     username,
@@ -199,6 +209,7 @@ adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
       role: finalRole,
       permissions: finalPermissions,
       must_change_password: must_change_password ?? true,
+      execution_mode: execution_mode || (finalRole === 'admin' ? 'host' : 'container'),
     },
   });
 

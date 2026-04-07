@@ -78,6 +78,7 @@ interface UsersState {
     permissions?: Permission[];
     must_change_password?: boolean;
     notes?: string;
+    execution_mode?: 'host' | 'container';
   }) => Promise<void>;
   updateUser: (
     id: string,

@@ -57,6 +57,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
   const [newMustChange, setNewMustChange] = useState(true);
   const [newNotes, setNewNotes] = useState('');
   const [newPermissions, setNewPermissions] = useState<Permission[]>([]);
+  const [newExecutionMode, setNewExecutionMode] = useState<'host' | 'container'>('container');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editRole, setEditRole] = useState<'admin' | 'member'>('member');
   const [editDisplayName, setEditDisplayName] = useState('');
@@ -199,6 +200,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
         permissions: permissionsForCreate,
         must_change_password: newMustChange,
         notes: newNotes.trim() || undefined,
+        execution_mode: roleForCreate === 'admin' ? undefined : newExecutionMode,
       });
       setNewUsername('');
       setNewPassword('');
@@ -207,6 +209,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
       setNewMustChange(true);
       setNewNotes('');
       setNewPermissions([]);
+      setNewExecutionMode('container');
       setShowCreate(false);
       setNotice('用户创建成功');
       await fetchUsers(query);
@@ -332,6 +335,17 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                 {isAdmin && <SelectItem value="admin">管理员</SelectItem>}
               </SelectContent>
             </Select>
+            {newRole === 'member' && (
+              <Select value={newExecutionMode} onValueChange={(value) => setNewExecutionMode(value as 'host' | 'container')}>
+                <SelectTrigger className="text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="container">Docker 容器</SelectItem>
+                  <SelectItem value="host">宿主机进程</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
             <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
               <input
                 type="checkbox"

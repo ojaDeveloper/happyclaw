@@ -2403,6 +2403,7 @@ export function ensureUserHomeGroup(
   userId: string,
   role: 'admin' | 'member',
   username?: string,
+  executionMode?: 'host' | 'container',
 ): string {
   const existing = getUserHomeGroup(userId);
   if (existing) return existing.jid;
@@ -2443,12 +2444,14 @@ export function ensureUserHomeGroup(
   }
 
   const name = username ? `${username} Home` : isAdmin ? 'Main' : 'Home';
+  // Admin always uses host; member defaults to container but can be overridden
+  const defaultMode = isAdmin ? 'host' : 'container';
 
   const group: RegisteredGroup = {
     name,
     folder,
     added_at: now,
-    executionMode: isAdmin ? 'host' : 'container',
+    executionMode: executionMode || defaultMode,
     created_by: userId,
     is_home: true,
   };

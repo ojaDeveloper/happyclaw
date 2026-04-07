@@ -1,18 +1,16 @@
 @echo off
-chcp 65001 >nul 2>&1
 setlocal
 
-REM HappyClaw Windows Startup Script
-REM Simplified equivalent of `make start` for Windows
+pushd "%~dp0"
 
 echo [1/4] Syncing shared types...
-copy /Y shared\stream-event.ts src\stream-event.types.ts >nul
-copy /Y shared\stream-event.ts web\src\stream-event.types.ts >nul
-copy /Y shared\stream-event.ts container\agent-runner\src\stream-event.types.ts >nul
-copy /Y shared\image-detector.ts src\image-detector.ts >nul
-copy /Y shared\image-detector.ts container\agent-runner\src\image-detector.ts >nul
-copy /Y shared\channel-prefixes.ts src\channel-prefixes.ts >nul
-copy /Y shared\channel-prefixes.ts container\agent-runner\src\channel-prefixes.ts >nul
+copy /Y shared\stream-event.ts src\stream-event.types.ts >nul 2>&1
+copy /Y shared\stream-event.ts web\src\stream-event.types.ts >nul 2>&1
+copy /Y shared\stream-event.ts container\agent-runner\src\stream-event.types.ts >nul 2>&1
+copy /Y shared\image-detector.ts src\image-detector.ts >nul 2>&1
+copy /Y shared\image-detector.ts container\agent-runner\src\image-detector.ts >nul 2>&1
+copy /Y shared\channel-prefixes.ts src\channel-prefixes.ts >nul 2>&1
+copy /Y shared\channel-prefixes.ts container\agent-runner\src\channel-prefixes.ts >nul 2>&1
 
 echo [2/4] Checking dependencies...
 if not exist node_modules (
@@ -36,9 +34,13 @@ call npm run build:all
 if errorlevel 1 goto :error
 
 echo [4/4] Starting server...
+if not defined WEB_PORT set WEB_PORT=3000
+if not defined ASSISTANT_NAME set ASSISTANT_NAME=HappyClaw
 node dist\index.js
+popd
 goto :eof
 
 :error
+popd
 echo Build failed!
 exit /b 1

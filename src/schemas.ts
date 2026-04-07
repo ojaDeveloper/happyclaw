@@ -302,6 +302,7 @@ export const AdminCreateUserSchema = z.object({
     .optional(),
   must_change_password: z.boolean().optional(),
   notes: z.string().max(2000).optional(),
+  execution_mode: z.enum(['host', 'container']).optional(),
 });
 
 export const AdminPatchUserSchema = z.object({
